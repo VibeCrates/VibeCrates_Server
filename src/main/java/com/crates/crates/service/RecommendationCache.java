@@ -38,7 +38,11 @@ import java.util.Optional;
 @Component
 public class RecommendationCache {
 
-    private static final String KEY_PREFIX = "reco:v1:";
+    /**
+     * 키에 담긴 구성 규칙의 버전. 추천을 고르는 규칙이 바뀌면 올린다 — 취향 벡터가 그대로면 예전 규칙으로 만든 결과가
+     * 계속 나가기 때문이다. v2: 보드마다 책 4 · 음악 2 · 영화 2, 종류가 번갈아 오는 순서(2026-10-09).
+     */
+    private static final String KEY_PREFIX = "reco:v2:";
     private static final Duration TTL = Duration.ofHours(24);
 
     /** 담는 값. 제목은 보드 순서(콘텐츠 8건씩 끊은 순서)와 같다. */

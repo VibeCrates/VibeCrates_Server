@@ -118,13 +118,13 @@ management:
       enabled: false
 
 
-# 검색 보드에 담을 콘텐츠 종류별 개수(SearchService). 합이 보드 크기(8)여야 한다.
+# 즉석에서 만드는 보드(홈 추천 보드, 검색 보드) 한 장에 담을 콘텐츠 종류별 개수(BoardContentMix). 합이 보드 크기(8)여야 한다.
 # 콘텐츠 벡터가 종류별로 모여 있어 그냥 가까운 순으로 8개를 고르면 한 종류만 나오기 쉬워, 종류마다 따로 뽑는다.
-search:
-  board-mix:
-    book: 4
-    music: 2
-    movie: 2
+# 보드 안에서는 종류가 번갈아 오도록 놓는다(책 → 음악 → 책 → 영화 …).
+board-mix:
+  book: 4
+  music: 2
+  movie: 2
 
 # ✅ 4. Qdrant 연결 설정 (커스텀 설정)
 ai:

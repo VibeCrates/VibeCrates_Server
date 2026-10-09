@@ -116,6 +116,48 @@ public class ContentVectorService {
     }
 
     /**
+     * 보드 여러 장 분량을 종류마다 한 번에 뽑아(묶음 검색 한 번) 보드마다 정해진 개수씩 나눠 담는다. 홈 추천 보드가 쓴다.
+     *
+     * <p>종류마다 {@code 장당 개수 × 장 수}를 가까운 순으로 받아, 앞에서부터 장당 개수씩 끊어 1번 보드부터 채운다.
+     * 그래서 앞쪽 보드일수록 각 종류에서 취향에 더 가까운 콘텐츠가 들어간다. 보드 안에서는 {@link #interleave}로
+     * 종류가 번갈아 오게 놓는다.</p>
+     *
+     * @return 보드 1번부터 차례로 이어 붙인 id → 벡터. 앞에서부터 보드 크기씩 끊으면 보드 한 장이다
+     */
+    public Map<Long, float[]> findSimilarBoardsByType(float[] targetVector, Map<String, Integer> perBoard, int boards) {
+        Map<String, Integer> total = new LinkedHashMap<>();
+        perBoard.forEach((type, count) -> total.put(type, count * boards));
+
+        Map<String, List<ScoredPointResult>> byType =
+                pointOperations.searchEachValue(collectionName, targetVector, VectorPayload.CONTENT_TYPE, total);
+
+        return splitIntoBoards(byType, perBoard, boards).stream()
+                .flatMap(board -> interleave(board).stream())
+                .collect(LinkedHashMap::new, (map, result) -> map.put(result.id(), result.vector()), Map::putAll);
+    }
+
+    /**
+     * 종류별 결과(가까운 순)를 앞에서부터 장당 개수씩 끊어 보드 장마다 나눈다.
+     *
+     * @return 보드마다 종류별 결과 목록
+     */
+    static List<List<List<ScoredPointResult>>> splitIntoBoards(Map<String, List<ScoredPointResult>> byType,
+                                                              Map<String, Integer> perBoard, int boards) {
+        List<List<List<ScoredPointResult>>> result = new ArrayList<>(boards);
+        for (int board = 0; board < boards; board++) {
+            List<List<ScoredPointResult>> parts = new ArrayList<>(perBoard.size());
+            for (Map.Entry<String, Integer> entry : perBoard.entrySet()) {
+                List<ScoredPointResult> results = byType.getOrDefault(entry.getKey(), List.of());
+                int from = Math.min(board * entry.getValue(), results.size());
+                int to = Math.min(from + entry.getValue(), results.size());
+                parts.add(results.subList(from, to));
+            }
+            result.add(parts);
+        }
+        return result;
+    }
+
+    /**
      * 종류별 결과를 종류가 번갈아 오도록 한 줄로 놓는다.
      *
      * <p>규칙: 매 칸마다 <b>남은 개수가 가장 많은 종류</b>를 고르되, <b>바로 앞 칸과 같은 종류는 피한다</b>(다른 종류가
@@ -148,13 +190,5 @@ public class ContentVectorService {
             previous = pick;
         }
         return ordered;
-    }
-
-    public Map<Long, float[]> findSimilar(float[] targetVector, int topK) {
-        Map<Long, float[]> vectorById = new LinkedHashMap<>();
-        for (ScoredPointResult result : pointOperations.search(collectionName, targetVector, topK, true)) {
-            vectorById.put(result.id(), result.vector());
-        }
-        return vectorById;
     }
 }
