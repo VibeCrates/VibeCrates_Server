@@ -11,6 +11,12 @@ public final class VectorPayload {
     /** content_vector: point id와 같은 content.id. payload 필터에 쓰려고 함께 싣는다. */
     public static final String CONTENT_ID = "content_id";
 
+    /**
+     * content_vector: 콘텐츠 종류(BOOK / MOVIE / MUSIC, content.dtype과 같은 값).
+     * 검색 보드가 종류마다 정해진 개수를 따로 뽑을 때 이 값으로 거른다. keyword 인덱스를 둔다.
+     */
+    public static final String CONTENT_TYPE = "dtype";
+
     /** query_vector: 보드 제목(한국어). 화면에 그대로 보여준다. */
     public static final String QUERY = "query";
 

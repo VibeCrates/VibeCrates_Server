@@ -110,6 +110,12 @@ public class ContentVectorLoader implements ApplicationRunner {
                     modelVersions, points - current);
             return false;
         }
+        // 콘텐츠 종류(dtype)를 payload에 싣기 전에 적재된 point는 검색 보드가 종류로 거를 수 없다.
+        long typed = contentVectorService.countPointsWithType(ContentVectorFiles.DTYPES);
+        if (typed != points) {
+            log.info("콘텐츠 종류(dtype)가 없는 point가 {}건 있어 콘텐츠 벡터를 다시 적재합니다.", points - typed);
+            return false;
+        }
         return true;
     }
 
@@ -163,6 +169,7 @@ public class ContentVectorLoader implements ApplicationRunner {
             }
             records.add(new ContentVectorRecord(
                     contentId,
+                    dtype,
                     ContentVectorCsv.decode(row.vectorBase64(), vectorDimension),
                     row.modelVersion()
             ));
