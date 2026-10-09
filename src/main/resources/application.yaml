@@ -129,15 +129,17 @@ ai:
       content-collection-name: content_vector
       query-collection-name: query_vector
       # 추천·검색 보드 제목은 콘텐츠 평균 벡터와 가장 가까운 query다(BoardTitleService). 대신 쓸 고정 제목은 없다.
-      # 실제 query 데이터(AI 개발자가 적재)가 들어오기 전까지 콘텐츠 벡터를 복제한 임시 query를 넣는다
-      # (QueryVectorStubLoader). 실제 데이터가 들어오면 query-stub.enabled를 false로 바꾼다.
-      #   copies  콘텐츠 벡터 1개당 임시 query 수. 개발은 1개(183,136개, 적재 수십 초).
-      #           부하 측정은 실제 규모(4배)로 잰다 — application-loadtest.yaml
-      #   noise   복제본에 더하는 가우스 잡음의 표준편차. 원본과 똑같은 벡터가 겹치지 않게 한다
-      query-stub:
+      # AI 개발자가 만든 query 벡터 CSV를 기동 시 query_vector에 적재한다(QueryVectorLoader).
+      # 파일은 카테고리별 셋이지만 모두 한 컬렉션에 넣는다. 제목은 한국어(query_ko), 같은 영어 문장은 한 번만 넣는다.
+      # 이미 같은 수·같은 model_version으로 적재돼 있으면 건너뛴다. recreate: true면 지우고 다시 넣는다.
+      query-load:
         enabled: true
-        copies: 1
-        noise: 0.01
+        batch-size: 256
+        recreate: false
+        files:
+          book: classpath:data/book_query_vectors.csv
+          movie: classpath:data/movie_query_vectors.csv
+          music: classpath:data/music_query_vectors.csv
       # AI 서버가 만든 콘텐츠 벡터 CSV를 기동 시 content_vector에 적재한다(ContentVectorLoader).
       # 이미 같은 수·같은 model_version으로 적재돼 있으면 건너뛰므로 매 기동마다 다시 넣지 않는다.
       load:

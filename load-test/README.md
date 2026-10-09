@@ -31,7 +31,7 @@ docker compose --env-file crates_server.env -f docker-compose.yml -f docker-comp
 |---|---:|---:|---|
 | backend | 4 (`BACKEND_CPUS`) | 3g | `loadtest` 프로파일 — SQL 출력만 끈다 |
 | postgres | 2 (`PG_CPUS`) | 2g | `shared_buffers=512MB`, `effective_cache_size=1536MB` |
-| qdrant | 1 (`QDRANT_CPUS`) | 4g | 임시 query 벡터 4배를 함께 싣는다 |
+| qdrant | 1 (`QDRANT_CPUS`) | 4g | query 벡터 37만 개를 함께 싣는다 |
 
 상한은 "클라우드에서 자원을 얼마나 써야 하나"를 정하려고 건다. 코어 수 실험은 파일을 고치지 않고
 `BACKEND_CPUS=2 docker compose ... up -d backend`로 한다. redis·minio는 측정할 API가 거치지 않아 두지 않는다.
@@ -42,11 +42,10 @@ docker compose --env-file crates_server.env -f docker-compose.yml -f docker-comp
 
 처음부터 띄울 때(`down -v` 후) 기동에 4~5분 걸린다(콘텐츠 18만 건 시딩 + 이미지 업로드 + Qdrant 적재).
 
-> **임시 query 벡터** — 보드 제목은 콘텐츠 평균 벡터와 가장 가까운 query로 정한다(`docs/board-schema.md` 4장).
-> 실제 query 데이터가 아직 없어서 `loadtest` 프로파일은 콘텐츠 벡터 하나마다 잡음을 섞은 복제본 4개를
-> `query_vector`에 넣고(`QueryVectorStubLoader`, 732,544개) 제목 매칭을 켠다. 이게 없으면 추천 1건마다
-> Qdrant 검색 4번, 검색 1건마다 1번이 빠져 Qdrant 자원을 낮게 잡는다. 기동할 때마다 개수를 확인해 비었으면
-> 다시 넣으므로 따로 돌릴 스크립트는 없다. 컨테이너 메모리 합계가 9GB라 **Docker Desktop 메모리를 12GB 이상**으로 둔다.
+> **query 벡터** — 보드 제목은 콘텐츠 평균 벡터와 가장 가까운 query로 정한다(`docs/board-schema.md` 4장).
+> AI 개발자가 만든 query 벡터 CSV(book·movie·music) 셋을 기동 때 `query_vector` 한 컬렉션에 넣는다(`QueryVectorLoader`).
+> 같은 영어 문장은 한 번만 넣어 372,667개다. 처음 적재는 몇 분 걸리고, 이후 기동은 개수·모델 버전을 확인해 건너뛴다.
+> 컨테이너 메모리 합계가 9GB라 **Docker Desktop 메모리를 12GB 이상**으로 둔다.
 `docker compose ps`로 `backend_server`가 뜬 것을 확인하고 시작한다.
 
 > `--build`를 붙이는 이유: `postgres/init.sql`(pg_stat_statements 생성)이 이미지에 구워져 있어,

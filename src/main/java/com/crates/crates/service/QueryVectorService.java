@@ -8,6 +8,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -34,11 +35,16 @@ public class QueryVectorService {
         return pointOperations.count(collectionName);
     }
 
+    /** model_version이 주어진 값 중 하나인 point 수. */
+    public long countPointsWithModelVersion(Collection<String> modelVersions) {
+        return pointOperations.countMatching(collectionName, VectorPayload.MODEL_VERSION, List.copyOf(modelVersions));
+    }
+
     public void upsert(QueryVectorRecord record) {
         upsertAll(List.of(record));
     }
 
-    // 보드 제목과 벡터, 그 벡터를 만든 모델 버전을 함께 저장한다. 버전은 쓸 때만 필요하다.
+    // 보드 제목(한국어)·영어 원문·벡터, 그 벡터를 만든 모델 버전을 함께 저장한다. 버전은 쓸 때만 필요하다.
     public void upsertAll(List<QueryVectorRecord> records) {
         List<PointRecord> points = records.stream()
                 .map(record -> new PointRecord(record.queryId(), record.vector(), payloadOf(record)))
@@ -50,6 +56,7 @@ public class QueryVectorService {
     private Map<String, Object> payloadOf(QueryVectorRecord record) {
         return Map.of(
                 VectorPayload.QUERY, record.queryText(),
+                VectorPayload.QUERY_EN, record.queryEn(),
                 VectorPayload.MODEL_VERSION,
                 VectorPayload.requireModelVersion(record.modelVersion(), "queryId " + record.queryId())
         );

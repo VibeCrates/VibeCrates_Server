@@ -11,8 +11,11 @@ public final class VectorPayload {
     /** content_vector: point id와 같은 content.id. payload 필터에 쓰려고 함께 싣는다. */
     public static final String CONTENT_ID = "content_id";
 
-    /** query_vector: 보드 제목. */
+    /** query_vector: 보드 제목(한국어). 화면에 그대로 보여준다. */
     public static final String QUERY = "query";
+
+    /** query_vector: 영어 원문. 벡터는 이 문장으로 만들었다. */
+    public static final String QUERY_EN = "query_en";
 
     /** 벡터를 만든 AI 모델 체크포인트 (예: {@code trained_model.pt@1786697109}). */
     public static final String MODEL_VERSION = "model_version";
