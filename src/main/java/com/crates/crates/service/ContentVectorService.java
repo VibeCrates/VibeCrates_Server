@@ -8,8 +8,11 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -101,14 +104,50 @@ public class ContentVectorService {
      * 종류마다 따로 걸러 검색해야 그 종류 안에서 가장 가까운 것을 확실히 얻는다 — 넉넉히 뽑아 고르는 방식은
      * 상위 수백 개 안에 어떤 종류가 아예 없을 수 있다.</p>
      *
-     * @return 뽑힌 콘텐츠를 유사도 높은 순으로 (종류를 섞어) 정렬한 id → 벡터
+     * @return 뽑힌 콘텐츠를 종류가 번갈아 오도록 놓은 id → 벡터 ({@link #interleave} 참고)
      */
     public Map<Long, float[]> findSimilarByType(float[] targetVector, Map<String, Integer> countByType) {
-        return pointOperations.searchEachValue(collectionName, targetVector, VectorPayload.CONTENT_TYPE, countByType)
-                .values().stream()
-                .flatMap(List::stream)
-                .sorted(Comparator.comparingDouble(ScoredPointResult::score).reversed())
+        List<List<ScoredPointResult>> byType = List.copyOf(
+                pointOperations.searchEachValue(collectionName, targetVector, VectorPayload.CONTENT_TYPE, countByType)
+                        .values());
+
+        return interleave(byType).stream()
                 .collect(LinkedHashMap::new, (map, result) -> map.put(result.id(), result.vector()), Map::putAll);
+    }
+
+    /**
+     * 종류별 결과를 종류가 번갈아 오도록 한 줄로 놓는다.
+     *
+     * <p>규칙: 매 칸마다 <b>남은 개수가 가장 많은 종류</b>를 고르되, <b>바로 앞 칸과 같은 종류는 피한다</b>(다른 종류가
+     * 남아 있을 때). 남은 개수가 같으면 다음 후보의 유사도가 높은 종류를 먼저 놓는다 — 결과가 매번 같고, 검색어와
+     * 가까운 종류가 앞에 온다. 종류 안에서는 유사도 높은 순(검색 결과 순서) 그대로다.
+     * 책 4 · 음악 2 · 영화 2면 책 → 음악 → 책 → 영화 → 책 → 음악 → 책 → 영화(음악·영화의 앞뒤는 유사도로 정해진다).</p>
+     *
+     * <p>순서는 보드를 가르는 기준이 아니다. 같은 보드인지는 정렬한 콘텐츠 id(content_signature)로 판단하므로,
+     * 놓는 순서를 바꿔도 새 보드가 생기거나 저장된 보드를 못 찾는 일은 없다.</p>
+     *
+     * @param byType 종류별 검색 결과. 각 목록은 유사도 높은 순이다
+     */
+    static List<ScoredPointResult> interleave(List<List<ScoredPointResult>> byType) {
+        List<Deque<ScoredPointResult>> queues = byType.stream()
+                .map(results -> (Deque<ScoredPointResult>) new ArrayDeque<>(results))
+                .toList();
+        int total = queues.stream().mapToInt(Deque::size).sum();
+
+        List<ScoredPointResult> ordered = new ArrayList<>(total);
+        Deque<ScoredPointResult> previous = null;
+        while (ordered.size() < total) {
+            Deque<ScoredPointResult> lastPick = previous;
+            Deque<ScoredPointResult> pick = queues.stream()
+                    .filter(queue -> !queue.isEmpty())
+                    .max(Comparator.<Deque<ScoredPointResult>>comparingInt(queue -> queue == lastPick ? 0 : 1)
+                            .thenComparingInt(Deque::size)
+                            .thenComparingDouble(queue -> queue.peekFirst().score()))
+                    .orElseThrow();
+            ordered.add(pick.pollFirst());
+            previous = pick;
+        }
+        return ordered;
     }
 
     public Map<Long, float[]> findSimilar(float[] targetVector, int topK) {
