@@ -27,6 +27,7 @@ public class RecommendationService {
     private final BoardService boardService;
     private final BoardTitleService boardTitleService;
     private final RecommendationCache recommendationCache;
+    private final BoardContentMix boardContentMix;
 
     /** 유사도 순으로 고른 콘텐츠와 그 벡터. 벡터는 보드 제목을 정할 때 쓴다. */
     public record SimilarContents(List<ContentResponseDto> contents, Map<Long, float[]> vectorById) {
@@ -61,9 +62,10 @@ public class RecommendationService {
             return cached.get();
         }
 
-        // 유사도 상위 32건을 받아 8건씩 끊어 4개 보드로 만든다.
-        // 앞쪽 보드일수록 취향에 가깝다.
-        SimilarContents similar = findSimilar(vector.vector(), Board.ITEMS_PER_BOARD * RECOMMENDED_BOARD_COUNT);
+        // 보드 4개에 종류별로 책 4 · 음악 2 · 영화 2씩 담는다(board-mix). 종류마다 4장 분량을 한 번에 받아
+        // 가까운 순으로 장마다 나누므로 앞쪽 보드일수록 취향에 가깝고, 보드 안에서는 종류가 번갈아 온다.
+        // 이어 붙인 결과를 8건씩 끊으면 보드 한 장이다.
+        SimilarContents similar = findSimilarBoardsByType(vector.vector(), boardContentMix.perBoard(), RECOMMENDED_BOARD_COUNT);
         List<List<ContentResponseDto>> slices = slicesOf(similar.contents());
 
         // 보드 4개의 제목을 한 번의 묶음 검색으로 정한다. 보드마다 자기 평균 벡터로 따로 검색된다.
@@ -121,17 +123,12 @@ public class RecommendationService {
     }
 
     /**
-     * 기준 벡터와 가까운 콘텐츠 요약과 벡터를 유사도 높은 순으로 돌려준다.
+     * 콘텐츠 종류마다 정해진 개수를 기준 벡터와 가까운 순으로 뽑아, 종류가 번갈아 오도록 놓아 돌려준다.
+     * 검색 보드가 쓴다(SearchService).
      *
      * <p>사용자 취향 벡터와 검색어 벡터가 같은 임베딩 공간에 있으므로 조회 경로를 공유한다.
-     * 호출하는 쪽은 벡터의 출처를 신경 쓰지 않는다.</p>
-     *
-     * <p>Qdrant가 매긴 순위는 getContentSummaries가 입력 순서를 유지해주므로 그대로 보존된다.
+     * 정한 순서는 getContentSummaries가 입력 순서를 유지해주므로 그대로 보존된다.
      * Qdrant에는 남아 있지만 RDB에서 사라진 콘텐츠도 거기서 함께 걸러진다.</p>
-     */
-    /**
-     * 콘텐츠 종류마다 정해진 개수를 기준 벡터와 가까운 순으로 뽑아, 유사도 높은 순으로 섞어 돌려준다.
-     * 검색 보드가 쓴다(SearchService). 정렬과 RDB 필터링은 findSimilar와 같다.
      */
     public SimilarContents findSimilarByType(float[] targetVector, Map<String, Integer> countByType)
     {
@@ -140,9 +137,10 @@ public class RecommendationService {
         return new SimilarContents(contentService.getContentSummaries(List.copyOf(vectorById.keySet())), vectorById);
     }
 
-    public SimilarContents findSimilar(float[] targetVector, int topN)
+    /** 보드 여러 장 분량을 종류별로 나눠 담아 돌려준다. 앞에서부터 보드 크기씩 끊으면 보드 한 장이다. */
+    public SimilarContents findSimilarBoardsByType(float[] targetVector, Map<String, Integer> perBoard, int boards)
     {
-        Map<Long, float[]> vectorById = contentVectorService.findSimilar(targetVector, topN);
+        Map<Long, float[]> vectorById = contentVectorService.findSimilarBoardsByType(targetVector, perBoard, boards);
 
         return new SimilarContents(contentService.getContentSummaries(List.copyOf(vectorById.keySet())), vectorById);
     }
