@@ -18,7 +18,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
-import java.util.function.Consumer;
 
 @Component
 @RequiredArgsConstructor
@@ -151,39 +150,6 @@ public class QdrantPointOperations {
             }
             into.put(pointId.getNum(), toFloatArray(point.getVectors().getVector()));
         }
-    }
-
-    /**
-     * 컬렉션의 모든 point 벡터를 {@link #RETRIEVE_CHUNK_SIZE}개씩 넘겨준다.
-     *
-     * <p>한 페이지씩 받아 바로 넘기므로 컬렉션 전체를 메모리에 올리지 않는다.
-     * 페이지 크기는 retrieve와 같은 이유(gRPC 수신 한도 4MB)로 정했다.</p>
-     */
-    public void scrollVectors(String collectionName, Consumer<Map<Long, float[]>> pageAction) {
-        Points.PointId offset = null;
-        do {
-            Points.ScrollPoints.Builder request = Points.ScrollPoints.newBuilder()
-                    .setCollectionName(collectionName)
-                    .setLimit(RETRIEVE_CHUNK_SIZE)
-                    .setWithPayload(WithPayloadSelectorFactory.enable(false))
-                    .setWithVectors(WithVectorsSelectorFactory.enable(true));
-            if (offset != null) {
-                request.setOffset(offset);
-            }
-
-            Points.ScrollResponse response = await(qdrantClient.scrollAsync(request.build()));
-            Map<Long, float[]> page = new HashMap<>(response.getResultCount());
-            for (Points.RetrievedPoint point : response.getResultList()) {
-                Points.PointId pointId = point.getId();
-                if (pointId.getPointIdOptionsCase() != Points.PointId.PointIdOptionsCase.NUM) {
-                    throw new IllegalStateException("Qdrant point id is not numeric.");
-                }
-                page.put(pointId.getNum(), toFloatArray(point.getVectors().getVector()));
-            }
-            pageAction.accept(page);
-
-            offset = response.hasNextPageOffset() ? response.getNextPageOffset() : null;
-        } while (offset != null);
     }
 
     /**

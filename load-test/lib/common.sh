@@ -15,18 +15,18 @@ wait_ready() {
     # backend를 막 다시 띄웠으면 웹 서버는 열렸어도 콘텐츠 벡터를 적재하는 중일 수 있다. 바로 실패하지 않고 기다린다.
     local seeded
     for _ in $(seq 1 60); do
-        seeded=$(docker logs backend_server 2>&1 | grep -c "seed completed" || true)
+        seeded=$(docker logs backend_server 2>&1 | grep -c "content vector seed completed" || true)
         [ "${seeded:-0}" -gt 0 ] && break
         printf '.'; sleep 10
     done
     [ "${seeded:-0}" -gt 0 ] || { echo "Qdrant 시딩 로그 없음" >&2; exit 1; }
-    # 임시 query 벡터는 ApplicationReadyEvent에서 들어가므로 웹 서버가 열린 뒤에도 몇 분 더 걸린다.
+    # query 벡터(37만 건)는 처음 적재할 때 몇 분 걸린다. 웹 서버가 열린 뒤에도 적재가 이어진다.
     for _ in $(seq 1 60); do
-        stubbed=$(docker logs backend_server 2>&1 | grep -c "query vector stub completed" || true)
-        [ "${stubbed:-0}" -gt 0 ] && break
+        loaded=$(docker logs backend_server 2>&1 | grep -c "query vector seed completed" || true)
+        [ "${loaded:-0}" -gt 0 ] && break
         printf '.'; sleep 10
     done
-    [ "${stubbed:-0}" -gt 0 ] || { echo "임시 query 벡터 적재 로그 없음" >&2; exit 1; }
+    [ "${loaded:-0}" -gt 0 ] || { echo "query 벡터 적재 로그 없음" >&2; exit 1; }
     # 적재 로그가 찍혀도 Qdrant는 HNSW 인덱스를 백그라운드로 짓는다. 그동안 재면 측정과 인덱싱이 CPU를 다퉈 둘 다 느려진다.
     # 예전에는 "Qdrant CPU가 20% 아래"로 판단했는데, 적재가 끝나고 인덱싱이 시작되기 전 CPU가 잠깐 내려간 순간을
     # 완료로 읽었다(2026-10-04: query_vector가 402,000/732,544만 인덱싱된 채 측정이 시작돼 추천 p95 27.8초).

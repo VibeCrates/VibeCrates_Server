@@ -54,10 +54,9 @@ services:
           memory: 2g
 
   qdrant:
-    # 콘텐츠 벡터 183,136개 + 임시 query 벡터 732,544개(4배, QueryVectorStubLoader)
-    # × 768차원 × 4바이트 ≈ 2.8GB에 HNSW 그래프가 얹힌다. 1.5GB였던 상한으로는 적재 중에 죽는다.
-    # 이 상한을 올리면 컨테이너 합계(backend 3 + postgres 2 + qdrant 4 = 9GB)가 Docker Desktop 기본 8GB를
-    # 넘으므로 Docker Desktop 메모리를 12GB 이상으로 둔다.
+    # 콘텐츠 벡터 183,136개 + query 벡터 372,667개(QueryVectorLoader) × 768차원 × 4바이트 ≈ 1.7GB에 HNSW 그래프가 얹힌다.
+    # 1.5GB였던 상한으로는 적재 중에 죽는다. 벡터 전체가 페이지 캐시에 들어가야 검색이 빠르다.
+    # 컨테이너 합계(backend 3 + postgres 2 + qdrant 4 = 9GB)가 Docker Desktop 기본 8GB를 넘으므로 12GB 이상으로 둔다.
     deploy:
       resources:
         limits:

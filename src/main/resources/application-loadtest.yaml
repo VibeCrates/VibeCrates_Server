@@ -22,13 +22,3 @@ logging:
   level:
     org.hibernate.SQL: WARN
     org.hibernate.type.descriptor.sql.BasicBinder: WARN
-
-# 임시 query를 실제 예상 규모(콘텐츠의 4배)로 넣는다(QueryVectorStubLoader). 개발 기본값은 1배다.
-# query_vector가 작으면 제목 매칭 검색이 실제보다 싸서 Qdrant 자원 상한을 낮게 잡는다.
-#   copies 4 = 콘텐츠 183,136 → query 732,544
-# 개발 환경(1배)과 번갈아 띄우면 개수가 달라 기동할 때마다 다시 적재한다.
-ai:
-  vectorstore:
-    qdrant:
-      query-stub:
-        copies: 4

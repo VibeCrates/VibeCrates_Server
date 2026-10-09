@@ -12,7 +12,6 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Consumer;
 
 @Service
 @RequiredArgsConstructor
@@ -79,11 +78,6 @@ public class ContentVectorService {
      */
     public Map<Long, float[]> findVectors(Collection<Long> contentIds) {
         return pointOperations.retrieveVectors(collectionName, contentIds);
-    }
-
-    /** 컬렉션의 모든 콘텐츠 벡터를 1,000개씩 넘겨준다. 부하 측정용 임시 query 벡터를 만들 때 쓴다. */
-    public void forEachVectorPage(Consumer<Map<Long, float[]>> pageAction) {
-        pointOperations.scrollVectors(collectionName, pageAction);
     }
 
     /**
