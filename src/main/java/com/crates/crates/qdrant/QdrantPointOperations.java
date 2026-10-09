@@ -15,6 +15,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
@@ -79,6 +80,17 @@ public class QdrantPointOperations {
                             + ", actual=" + actualDimension
             );
         }
+    }
+
+    /**
+     * payload 필드에 keyword 인덱스를 만든다. 이미 있으면 Qdrant가 그대로 둔다.
+     *
+     * <p>인덱스 없이 payload로 거르면 Qdrant가 후보마다 payload를 읽어 확인해야 한다. 검색 보드는 요청마다
+     * 콘텐츠 종류로 걸러 검색하므로 인덱스를 둔다.</p>
+     */
+    public void ensureKeywordIndex(String collectionName, String field) {
+        await(qdrantClient.createPayloadIndexAsync(
+                collectionName, field, Collections.PayloadSchemaType.Keyword, null, true, null, null));
     }
 
     /** 컬렉션이 있으면 통째로 지운다. 없으면 아무 일도 하지 않는다. */
@@ -240,6 +252,35 @@ public class QdrantPointOperations {
                 .stream()
                 .map(batch -> batch.getResultList().stream().map(this::toResult).toList())
                 .toList();
+    }
+
+    /**
+     * 같은 기준 벡터로, payload 필드 값마다 정해진 개수를 따로 검색한다. 한 번의 요청(묶음 검색)으로 보낸다.
+     *
+     * <p>결과는 값마다 따로 돌아온다(입력 Map의 순서). 벡터도 함께 받는다 — 보드 제목을 정할 때 평균을 낸다.</p>
+     *
+     * @param limitByValue 필드 값 → 그 값에서 뽑을 개수 (예: BOOK 4, MUSIC 2, MOVIE 2)
+     */
+    public Map<String, List<ScoredPointResult>> searchEachValue(String collectionName, float[] queryVector,
+                                                                String field, Map<String, Integer> limitByValue) {
+        List<String> values = List.copyOf(limitByValue.keySet());
+        List<Points.SearchPoints> requests = values.stream()
+                .map(value -> Points.SearchPoints.newBuilder()
+                        .setCollectionName(collectionName)
+                        .addAllVector(toFloatList(queryVector))
+                        .setFilter(Points.Filter.newBuilder().addMust(ConditionFactory.matchKeyword(field, value)).build())
+                        .setLimit(limitByValue.get(value))
+                        .setWithPayload(WithPayloadSelectorFactory.enable(true))
+                        .setWithVectors(WithVectorsSelectorFactory.enable(true))
+                        .build())
+                .toList();
+
+        List<Points.BatchResult> results = await(qdrantClient.searchBatchAsync(collectionName, requests, null));
+        Map<String, List<ScoredPointResult>> byValue = new LinkedHashMap<>();
+        for (int i = 0; i < values.size(); i++) {
+            byValue.put(values.get(i), results.get(i).getResultList().stream().map(this::toResult).toList());
+        }
+        return byValue;
     }
 
     private Points.PointStruct toPointStruct(PointRecord point) {

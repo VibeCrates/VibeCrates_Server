@@ -8,7 +8,11 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +29,7 @@ public class ContentVectorService {
     // 콘텐츠 벡터 컬렉션을 생성하거나 기존 컬렉션의 차원을 검증한다.
     public void ensureCollection(int vectorDimension) {
         pointOperations.ensureCollection(collectionName, vectorDimension);
+        pointOperations.ensureKeywordIndex(collectionName, VectorPayload.CONTENT_TYPE);
     }
 
     /**
@@ -37,7 +42,7 @@ public class ContentVectorService {
      */
     public void recreateCollection(int vectorDimension) {
         pointOperations.deleteCollection(collectionName);
-        pointOperations.ensureCollection(collectionName, vectorDimension);
+        ensureCollection(vectorDimension);
     }
 
     /** 컬렉션의 point 수. */
@@ -48,6 +53,11 @@ public class ContentVectorService {
     /** model_version이 주어진 값 중 하나인 point 수. */
     public long countPointsWithModelVersion(Collection<String> modelVersions) {
         return pointOperations.countMatching(collectionName, VectorPayload.MODEL_VERSION, List.copyOf(modelVersions));
+    }
+
+    /** 콘텐츠 종류(dtype)가 주어진 값 중 하나인 point 수. dtype을 싣기 전에 적재된 point를 가려낸다. */
+    public long countPointsWithType(Collection<String> dtypes) {
+        return pointOperations.countMatching(collectionName, VectorPayload.CONTENT_TYPE, List.copyOf(dtypes));
     }
 
     // Qdrant point ID와 payload의 content_id를 관계형 DB의 content ID로 통일해 저장한다.
@@ -67,6 +77,7 @@ public class ContentVectorService {
     private Map<String, Object> payloadOf(ContentVectorRecord record) {
         return Map.of(
                 VectorPayload.CONTENT_ID, record.contentId(),
+                VectorPayload.CONTENT_TYPE, record.dtype(),
                 VectorPayload.MODEL_VERSION,
                 VectorPayload.requireModelVersion(record.modelVersion(), "contentId " + record.contentId())
         );
@@ -86,6 +97,59 @@ public class ContentVectorService {
      * <p>벡터를 함께 받는 이유는 보드 제목 때문이다. 제목은 보드에 담긴 콘텐츠의 평균 벡터와 가장 가까운
      * query로 정하는데, 따로 retrieve하면 Qdrant 왕복이 한 번 늘어난다.</p>
      */
+    /**
+     * 콘텐츠 종류마다 정해진 개수를 기준 벡터와 가까운 순으로 뽑는다(묶음 검색 한 번).
+     *
+     * <p>콘텐츠 벡터는 종류별로 모여 있어서, 그냥 가까운 순으로 뽑으면 한 종류만 나오기 쉽다.
+     * 종류마다 따로 걸러 검색해야 그 종류 안에서 가장 가까운 것을 확실히 얻는다 — 넉넉히 뽑아 고르는 방식은
+     * 상위 수백 개 안에 어떤 종류가 아예 없을 수 있다.</p>
+     *
+     * @return 뽑힌 콘텐츠를 종류가 번갈아 오도록 놓은 id → 벡터 ({@link #interleave} 참고)
+     */
+    public Map<Long, float[]> findSimilarByType(float[] targetVector, Map<String, Integer> countByType) {
+        List<List<ScoredPointResult>> byType = List.copyOf(
+                pointOperations.searchEachValue(collectionName, targetVector, VectorPayload.CONTENT_TYPE, countByType)
+                        .values());
+
+        return interleave(byType).stream()
+                .collect(LinkedHashMap::new, (map, result) -> map.put(result.id(), result.vector()), Map::putAll);
+    }
+
+    /**
+     * 종류별 결과를 종류가 번갈아 오도록 한 줄로 놓는다.
+     *
+     * <p>규칙: 매 칸마다 <b>남은 개수가 가장 많은 종류</b>를 고르되, <b>바로 앞 칸과 같은 종류는 피한다</b>(다른 종류가
+     * 남아 있을 때). 남은 개수가 같으면 다음 후보의 유사도가 높은 종류를 먼저 놓는다 — 결과가 매번 같고, 검색어와
+     * 가까운 종류가 앞에 온다. 종류 안에서는 유사도 높은 순(검색 결과 순서) 그대로다.
+     * 책 4 · 음악 2 · 영화 2면 책 → 음악 → 책 → 영화 → 책 → 음악 → 책 → 영화(음악·영화의 앞뒤는 유사도로 정해진다).</p>
+     *
+     * <p>순서는 보드를 가르는 기준이 아니다. 같은 보드인지는 정렬한 콘텐츠 id(content_signature)로 판단하므로,
+     * 놓는 순서를 바꿔도 새 보드가 생기거나 저장된 보드를 못 찾는 일은 없다.</p>
+     *
+     * @param byType 종류별 검색 결과. 각 목록은 유사도 높은 순이다
+     */
+    static List<ScoredPointResult> interleave(List<List<ScoredPointResult>> byType) {
+        List<Deque<ScoredPointResult>> queues = byType.stream()
+                .map(results -> (Deque<ScoredPointResult>) new ArrayDeque<>(results))
+                .toList();
+        int total = queues.stream().mapToInt(Deque::size).sum();
+
+        List<ScoredPointResult> ordered = new ArrayList<>(total);
+        Deque<ScoredPointResult> previous = null;
+        while (ordered.size() < total) {
+            Deque<ScoredPointResult> lastPick = previous;
+            Deque<ScoredPointResult> pick = queues.stream()
+                    .filter(queue -> !queue.isEmpty())
+                    .max(Comparator.<Deque<ScoredPointResult>>comparingInt(queue -> queue == lastPick ? 0 : 1)
+                            .thenComparingInt(Deque::size)
+                            .thenComparingDouble(queue -> queue.peekFirst().score()))
+                    .orElseThrow();
+            ordered.add(pick.pollFirst());
+            previous = pick;
+        }
+        return ordered;
+    }
+
     public Map<Long, float[]> findSimilar(float[] targetVector, int topK) {
         Map<Long, float[]> vectorById = new LinkedHashMap<>();
         for (ScoredPointResult result : pointOperations.search(collectionName, targetVector, topK, true)) {

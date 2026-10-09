@@ -129,6 +129,17 @@ public class RecommendationService {
      * <p>Qdrant가 매긴 순위는 getContentSummaries가 입력 순서를 유지해주므로 그대로 보존된다.
      * Qdrant에는 남아 있지만 RDB에서 사라진 콘텐츠도 거기서 함께 걸러진다.</p>
      */
+    /**
+     * 콘텐츠 종류마다 정해진 개수를 기준 벡터와 가까운 순으로 뽑아, 유사도 높은 순으로 섞어 돌려준다.
+     * 검색 보드가 쓴다(SearchService). 정렬과 RDB 필터링은 findSimilar와 같다.
+     */
+    public SimilarContents findSimilarByType(float[] targetVector, Map<String, Integer> countByType)
+    {
+        Map<Long, float[]> vectorById = contentVectorService.findSimilarByType(targetVector, countByType);
+
+        return new SimilarContents(contentService.getContentSummaries(List.copyOf(vectorById.keySet())), vectorById);
+    }
+
     public SimilarContents findSimilar(float[] targetVector, int topN)
     {
         Map<Long, float[]> vectorById = contentVectorService.findSimilar(targetVector, topN);
