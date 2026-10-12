@@ -154,6 +154,12 @@ services:
   redis:
     image: redis:latest
     container_name: redis_server
+    # 메모리 상한과 꽉 찼을 때의 정책. 상한이 없으면(기본 0) 컨테이너 한계까지 늘다 OOM으로 죽어 로그인 토큰까지 사라진다.
+    #   256mb        검색어 임베딩 캐시(키 1개 약 5.2KB, TTL 1시간) + 홈 추천 캐시 + OAuth 임시 토큰(TTL 5분)을 넉넉히 담는다.
+    #                ElastiCache 최소 노드(cache.t4g.micro 0.5GiB, 예약 25% 뺀 약 384MB)에도 들어간다.
+    #   volatile-lru 차면 TTL이 있는 키 중 오래 안 쓴 것부터 지운다. 곧 쓰이고 사라지는 로그인 토큰보다
+    #                오래된 캐시가 먼저 밀려난다. volatile-ttl은 남은 TTL이 짧은 로그인 토큰부터 지우므로 쓰지 않는다.
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
     ports:
       - "6379:6379"
     healthcheck:
