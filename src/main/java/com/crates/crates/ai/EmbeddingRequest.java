@@ -1,4 +1,7 @@
 package com.crates.crates.ai;
 
-public record EmbeddingRequest(String text) {
+import java.util.List;
+
+/** AI 서버 묶음 임베딩 요청. {@code POST /api/v1/embeddings} {"query": ["...", ...]} */
+public record EmbeddingRequest(List<String> query) {
 }
