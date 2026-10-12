@@ -185,11 +185,6 @@ public class QdrantPointOperations {
         return result;
     }
 
-    // 단일 벡터를 Qdrant point 형식으로 변환해 저장한다.
-    public void upsertPoint(String collectionName, long id, float[] vector, Map<String, Object> payload) {
-        upsertPoints(collectionName, List.of(new PointRecord(id, vector, payload)));
-    }
-
     // 네트워크 호출 횟수를 줄이기 위해 여러 Qdrant point를 한 요청으로 저장한다.
     public void upsertPoints(String collectionName, List<PointRecord> points) {
         if (points.isEmpty()) {

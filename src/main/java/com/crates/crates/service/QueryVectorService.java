@@ -40,10 +40,6 @@ public class QueryVectorService {
         return pointOperations.countMatching(collectionName, VectorPayload.MODEL_VERSION, List.copyOf(modelVersions));
     }
 
-    public void upsert(QueryVectorRecord record) {
-        upsertAll(List.of(record));
-    }
-
     // 보드 제목(한국어)·영어 원문·벡터, 그 벡터를 만든 모델 버전을 함께 저장한다. 버전은 쓸 때만 필요하다.
     public void upsertAll(List<QueryVectorRecord> records) {
         List<PointRecord> points = records.stream()

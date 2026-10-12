@@ -123,8 +123,12 @@ public class BoardService {
         }
         else
         {
+            // 원본은 그대로 두고 내 USER_CUSTOM 보드를 새로 만든다.
+            // 원본의 좋아요는 옮기지 않는다. 원본은 다른 사용자들의 것이기도 하다.
             ensureNoDuplicateUserBoard(userId, signature, null);
-            target = cloneAsUserBoard(request.title(), contents, userId);
+            Board clone = newUserBoard(findUser(userId), request.title());
+            clone.replaceContents(contents);
+            target = boardRepository.save(clone);
         }
 
         // 방금 넘긴 순서가 곧 slot 순서라, 다시 조회하지 않고 그대로 요약을 만든다.
@@ -150,19 +154,6 @@ public class BoardService {
     private boolean isOwnedBy(Board board, Long userId)
     {
         return board.getUser() != null && board.getUser().getId().equals(userId);
-    }
-
-    /**
-     * 원본은 그대로 두고 내 USER_CUSTOM 보드를 새로 만든다.
-     *
-     * <p>원본의 좋아요는 옮기지 않는다. 원본은 다른 사용자들의 것이기도 하다.</p>
-     */
-    private Board cloneAsUserBoard(String title, List<Content> contents, Long userId)
-    {
-        Board clone = newUserBoard(findUser(userId), title);
-        clone.replaceContents(contents);
-
-        return boardRepository.save(clone);
     }
 
     /** 사용자 소유 보드의 초기 상태. 좋아요는 0, 공개 여부는 기본 공개다. */
