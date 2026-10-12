@@ -164,10 +164,32 @@ ai:
           music: classpath:data/music_vectors.csv
   server:
     base-url: http://100.77.133.40:8000  # AI 서버(Tailscale IP). 로컬 단독 테스트 시 http://localhost:8000
-    embedding-path: /api/v1/search/vector  # AI 서버가 백엔드용으로 만든 계약: {"text": "..."} -> {"vector": [...]}
+    # 묶음 임베딩 계약: {"query": ["...", ...]} -> {"vectors": [[...], ...], "model_version": "..."} (순서 그대로)
+    embedding-path: /api/v1/embeddings
+    # 연결은 짧게 둔다. AI 서버가 꺼지면(2026-10-10 Tailscale 끊김) 빨리 실패해야 다른 요청이 밀리지 않는다.
     connect-timeout: 2000
-    read-timeout: 3000
+    # 묶음 호출 하나의 상한. 한글 50건 묶음이 약 1.8초라 넉넉히 둔다. 사용자가 기다리는 상한은 아래 max-wait다.
+    read-timeout: 5000
     embedding-dimension: 768   # AI 서버가 반환하는 벡터 차원 (float32 x 768). 콘텐츠 벡터 적재도 이 값으로 검증한다
+
+  # 검색어 임베딩(검색 보드). 자세한 이유는 EmbeddingBatcher, EmbeddingCache 머리말.
+  embedding:
+    batch:
+      # 첫 요청 뒤 이만큼 더 모아 한 번에 보낸다. 한가할 때는 요청 하나가 이만큼 늦게 나갈 뿐이다.
+      window: 20ms
+      # 한 번에 보내는 최대 수. 한글은 10~50건 묶음이 가장 빠르고, 100건부터 건당 시간이 늘었다(2026-10-10 측정).
+      max-size: 50
+      # AI 서버로 동시에 보내는 묶음 수. 많이 보내면 AI 서버가 연결을 끊는다.
+      max-concurrent-calls: 2
+      # 받아 둘 요청 수(대기 + 처리 중). 넘치면 503. 검색 보드가 붙잡는 톰캣 스레드(기본 200개)의 상한이기도 하다.
+      max-pending: 60
+      # 한 요청이 기다리는 상한. 넘기면 503.
+      max-wait: 8s
+    # Redis(emb:v1:{검색어}). 키 1개 약 5.2KB라 메모리 ≈ TTL 동안의 서로 다른 검색어 수 × 5.2KB.
+    # 검색어는 겹침이 적어 짧은 시간 안의 반복만 노린다. TTL이 길면 같은 Redis의 추천 캐시가 volatile-lru로 밀려날 수 있다.
+    cache:
+      enabled: true
+      ttl: 1h
 
   # 사용자 취향 벡터. 좋아요한 보드들의 콘텐츠 벡터에서 매번 다시 계산한다.
   user-vector:

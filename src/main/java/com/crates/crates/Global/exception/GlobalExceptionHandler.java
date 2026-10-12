@@ -27,6 +27,15 @@ public class GlobalExceptionHandler {
                 .body(new ApiResponse<>(false, null, e.getMessage()));
     }
 
+    /** AI 서버로 가는 요청이 밀렸다(EmbeddingBatcher). 붐비는 것이지 고장이 아니므로 스택은 남기지 않는다. */
+    @ExceptionHandler(AiServerBusyException.class)
+    public ResponseEntity<ApiResponse<Void>> handleAiServerBusyException(AiServerBusyException e)
+    {
+        log.warn("[AI SERVER BUSY] {}", e.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(new ApiResponse<>(false, null, e.getMessage()));
+    }
+
     @ExceptionHandler(AiServerException.class)
     public ResponseEntity<ApiResponse<Void>> handleAiServerException(AiServerException e)
     {
