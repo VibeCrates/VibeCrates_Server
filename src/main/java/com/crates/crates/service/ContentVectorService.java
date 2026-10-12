@@ -60,12 +60,8 @@ public class ContentVectorService {
         return pointOperations.countMatching(collectionName, VectorPayload.CONTENT_TYPE, List.copyOf(dtypes));
     }
 
-    // Qdrant point ID와 payload의 content_id를 관계형 DB의 content ID로 통일해 저장한다.
-    public void upsert(ContentVectorRecord record) {
-        upsertAll(List.of(record));
-    }
-
     // 여러 콘텐츠 벡터를 Qdrant point로 변환해 배치 저장한다.
+    // Qdrant point ID와 payload의 content_id를 관계형 DB의 content ID로 통일한다.
     public void upsertAll(List<ContentVectorRecord> records) {
         List<PointRecord> points = records.stream()
                 .map(record -> new PointRecord(record.contentId(), record.vector(), payloadOf(record)))
