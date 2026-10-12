@@ -21,6 +21,8 @@ import * as api from '../lib/api.js';
 const RATE = Number(__ENV.RATE || 50);
 const DURATION = __ENV.DURATION || '60s';
 const MAX_CONTENT_ID = api.MAX_CONTENT_ID;
+// 보드 id 범위는 run-sweep.sh가 DB에서 읽어 넘긴다. prepare.sh로 다시 만들면 시퀀스가 이어져 1부터 시작하지 않는다.
+const MIN_BOARD_ID = Number(__ENV.MIN_BOARD_ID || 1);
 const MAX_BOARD_ID = Number(__ENV.MAX_BOARD_ID || 250800);
 const LONG_KEYWORDS = KEYWORDS.filter((k) => [...k].length >= 3);
 
@@ -98,7 +100,7 @@ export function content_detail({ contents }) {
 }
 export function like_toggle() {
   const token = pick();
-  const boardId = 1 + Math.floor(Math.random() * MAX_BOARD_ID);
+  const boardId = MIN_BOARD_ID + Math.floor(Math.random() * (MAX_BOARD_ID - MIN_BOARD_ID + 1));
   record(api.likeBoard(token, boardId), tag('like_toggle'));
   record(api.unlikeBoard(token, boardId), tag('like_toggle'));
 }
