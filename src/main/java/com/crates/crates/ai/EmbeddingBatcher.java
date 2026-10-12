@@ -59,7 +59,7 @@ public class EmbeddingBatcher {
     private static final String BUSY_MESSAGE = "검색 요청이 많아 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.";
 
     /** 받아 둔 요청 하나. AI 응답이 오면 {@code result}가 끝난다. */
-    private record Pending(String text, CompletableFuture<float[]> result) {
+    private record Pending(String text, CompletableFuture<QueryEmbedding> result) {
     }
 
     private final AiEmbeddingClient client;
@@ -135,20 +135,20 @@ public class EmbeddingBatcher {
     }
 
     /**
-     * 검색어 하나를 벡터로 바꾼다. 차례가 와서 AI 응답을 받을 때까지 호출한 스레드가 기다린다.
+     * 검색어 하나를 벡터와 domain으로 바꾼다. 차례가 와서 AI 응답을 받을 때까지 호출한 스레드가 기다린다.
      *
      * @throws AiServerBusyException 받아 둘 자리가 없거나 {@code max-wait} 안에 끝나지 않음(503)
      * @throws AiServerException     AI 서버 호출 실패(502)
      */
-    public float[] embed(String text)
+    public QueryEmbedding embed(String text)
     {
         if (!pendingSlots.tryAcquire())
         {
             rejectedFull.increment();
             throw new AiServerBusyException(BUSY_MESSAGE);
         }
-        Pending pending = new Pending(text, new CompletableFuture<>());
-        pending.result().whenComplete((vector, error) -> pendingSlots.release());
+            Pending pending = new Pending(text, new CompletableFuture<>());
+            pending.result().whenComplete((vector, error) -> pendingSlots.release());
         queue.add(pending);
 
         try
@@ -255,11 +255,11 @@ public class EmbeddingBatcher {
 
         try
         {
-            List<float[]> vectors = callTime.recordCallable(() -> client.embedAll(texts));
+            List<QueryEmbedding> embeddings = callTime.recordCallable(() -> client.embedAll(texts));
             for (int i = 0; i < texts.size(); i++)
             {
-                float[] vector = vectors.get(i);
-                byText.get(texts.get(i)).forEach(pending -> pending.result().complete(vector));
+                QueryEmbedding embedding = embeddings.get(i);
+                byText.get(texts.get(i)).forEach(pending -> pending.result().complete(embedding));
             }
         }
         catch (Exception e)

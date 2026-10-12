@@ -4,6 +4,7 @@ import com.crates.crates.entity.board.Board;
 import com.crates.crates.entity.contents.Book;
 import com.crates.crates.entity.contents.Movie;
 import com.crates.crates.entity.contents.Music;
+import com.crates.crates.enumData.SearchDomain;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -45,5 +46,18 @@ public class BoardContentMix {
     public Map<String, Integer> perBoard()
     {
         return countByType;
+    }
+
+    /**
+     * 검색어가 가리키는 종류에 맞춘 보드 한 장의 종류별 개수.
+     *
+     * <p>ALL이면 {@link #perBoard()}(책 4 · 음악 2 · 영화 2)이고, 한 종류면 보드 8칸을 모두 그 종류로 채운다
+     * ("잔잔한 영화" → 영화 8).</p>
+     */
+    public Map<String, Integer> perBoard(SearchDomain domain)
+    {
+        return domain.dtype()
+                .map(dtype -> Map.of(dtype, Board.ITEMS_PER_BOARD))
+                .orElse(countByType);
     }
 }

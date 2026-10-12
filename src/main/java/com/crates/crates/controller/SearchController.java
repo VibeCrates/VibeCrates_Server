@@ -41,7 +41,7 @@ public class SearchController {
     public ResponseEntity<ApiResponse<Void>> requestQueryVector(
             @RequestParam @NotBlank(message = "검색어를 입력해주세요.") @Size(max = 100, message = "검색어는 100자를 초과할 수 없습니다.") String keyword)
     {
-        searchService.getQueryVector(keyword);
+        searchService.getQueryEmbedding(keyword);
         return ResponseEntity.ok(new ApiResponse<>(true, null, "검색어 벡터 계산 완료"));
     }
 }

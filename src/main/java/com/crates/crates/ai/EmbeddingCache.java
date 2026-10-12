@@ -1,5 +1,6 @@
 package com.crates.crates.ai;
 
+import com.crates.crates.enumData.SearchDomain;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
@@ -14,7 +15,7 @@ import java.util.Base64;
 import java.util.Optional;
 
 /**
- * 검색어 → 임베딩 벡터를 Redis에 둔다. 같은 검색어는 AI 서버를 다시 부르지 않는다.
+ * 검색어 → 임베딩 벡터와 domain을 Redis에 둔다. 같은 검색어는 AI 서버를 다시 부르지 않는다.
  *
  * <h2>왜</h2>
  *
@@ -22,6 +23,11 @@ import java.util.Optional;
  * 늘 같으므로(묶음·단건 API의 코사인 유사도 1.000000), 한 번 바꾼 벡터를 두면 다시 검색할 때 AI 서버를 부르지 않는다.
  * 검색어는 겹치는 일이 많지 않아, 짧은 시간 안의 반복(같은 사용자의 재검색, 같은 화제로 몰리는 검색)만 노린다.
  * 키 수 ≈ TTL 동안의 서로 다른 검색어 수라 TTL을 짧게 둔다({@code ai.embedding.cache.ttl}).</p>
+ *
+ * <h2>값 형식</h2>
+ *
+ * <p>{@code model_version \n domain \n 벡터(float32 리틀 엔디언 Base64)}. domain을 담기 전 형식(줄 2개)의 값은
+ * 없는 것으로 보고 AI 서버를 다시 불러 덮어쓴다.</p>
  *
  * <h2>낡은 벡터</h2>
  *
@@ -68,7 +74,7 @@ public class EmbeddingCache {
                 .register(registry);
     }
 
-    public Optional<float[]> get(String query)
+    public Optional<QueryEmbedding> get(String query)
     {
         if (!enabled)
         {
@@ -79,13 +85,13 @@ public class EmbeddingCache {
             String value = redis.opsForValue().get(KEY_PREFIX + query);
             if (value != null)
             {
-                int separator = value.indexOf('\n');
-                String modelVersion = value.substring(0, separator);
+                String[] parts = value.split("\n", 3);
                 String current = client.lastModelVersion();
-                if (current == null || current.equals(modelVersion))
+                Optional<SearchDomain> domain = parts.length == 3 ? SearchDomain.fromAiValue(parts[1]) : Optional.empty();
+                if (domain.isPresent() && (current == null || current.equals(parts[0])))
                 {
                     hits.increment();
-                    return Optional.of(decode(value.substring(separator + 1)));
+                    return Optional.of(new QueryEmbedding(decode(parts[2]), domain.get()));
                 }
             }
             misses.increment();
@@ -99,7 +105,7 @@ public class EmbeddingCache {
         }
     }
 
-    public void put(String query, float[] vector)
+    public void put(String query, QueryEmbedding embedding)
     {
         String modelVersion = client.lastModelVersion();
         if (!enabled || modelVersion == null)
@@ -108,7 +114,8 @@ public class EmbeddingCache {
         }
         try
         {
-            redis.opsForValue().set(KEY_PREFIX + query, modelVersion + '\n' + encode(vector), ttl);
+            String value = modelVersion + '\n' + embedding.domain().name() + '\n' + encode(embedding.vector());
+            redis.opsForValue().set(KEY_PREFIX + query, value, ttl);
         }
         catch (RuntimeException e)
         {

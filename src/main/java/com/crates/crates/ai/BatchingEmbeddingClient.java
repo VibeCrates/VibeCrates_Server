@@ -17,13 +17,13 @@ public class BatchingEmbeddingClient implements EmbeddingClient {
     private final EmbeddingBatcher batcher;
 
     @Override
-    public float[] embed(String text)
+    public QueryEmbedding embed(String text)
     {
         String query = text.strip().replaceAll("\\s+", " ");
         return cache.get(query).orElseGet(() -> {
-            float[] vector = batcher.embed(query);
-            cache.put(query, vector);
-            return vector;
+            QueryEmbedding embedding = batcher.embed(query);
+            cache.put(query, embedding);
+            return embedding;
         });
     }
 }

@@ -2,6 +2,7 @@ package com.crates.crates.ai;
 
 import com.crates.crates.Global.exception.AiServerBusyException;
 import com.crates.crates.Global.exception.AiServerException;
+import com.crates.crates.enumData.SearchDomain;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -49,6 +50,11 @@ class EmbeddingBatcherTest {
         return new float[] {text.charAt(0)};
     }
 
+    private static QueryEmbedding embeddingOf(String text)
+    {
+        return new QueryEmbedding(vectorOf(text), SearchDomain.ALL);
+    }
+
     @Test
     void window_안에_온_요청은_한_번에_보내고_같은_검색어는_한_번만_보낸다() throws Exception
     {
@@ -56,12 +62,12 @@ class EmbeddingBatcherTest {
         when(client.embedAll(anyList())).thenAnswer(invocation -> {
             List<String> texts = invocation.getArgument(0);
             calls.add(texts);
-            return texts.stream().map(EmbeddingBatcherTest::vectorOf).toList();
+            return texts.stream().map(EmbeddingBatcherTest::embeddingOf).toList();
         });
         start(2, 60, Duration.ofSeconds(5));
 
         List<String> texts = List.of("재즈", "록", "재즈", "공포");
-        List<CompletableFuture<float[]>> results = new ArrayList<>();
+        List<CompletableFuture<QueryEmbedding>> results = new ArrayList<>();
         for (String text : texts)
         {
             results.add(CompletableFuture.supplyAsync(() -> batcher.embed(text), requests));
@@ -69,7 +75,7 @@ class EmbeddingBatcherTest {
 
         for (int i = 0; i < texts.size(); i++)
         {
-            assertThat(results.get(i).get(2, TimeUnit.SECONDS)).containsExactly(vectorOf(texts.get(i)));
+            assertThat(results.get(i).get(2, TimeUnit.SECONDS).vector()).containsExactly(vectorOf(texts.get(i)));
         }
         assertThat(calls).hasSize(1);
         assertThat(calls.getFirst()).containsExactlyInAnyOrder("재즈", "록", "공포");
@@ -82,21 +88,21 @@ class EmbeddingBatcherTest {
         when(client.embedAll(anyList())).thenAnswer(invocation -> {
             release.await();
             List<String> texts = invocation.getArgument(0);
-            return texts.stream().map(EmbeddingBatcherTest::vectorOf).toList();
+            return texts.stream().map(EmbeddingBatcherTest::embeddingOf).toList();
         });
         start(1, 2, Duration.ofSeconds(5));
 
-        CompletableFuture<float[]> first = CompletableFuture.supplyAsync(() -> batcher.embed("a"), requests);
-        CompletableFuture<float[]> second = CompletableFuture.supplyAsync(() -> batcher.embed("b"), requests);
+        CompletableFuture<QueryEmbedding> first = CompletableFuture.supplyAsync(() -> batcher.embed("a"), requests);
+        CompletableFuture<QueryEmbedding> second = CompletableFuture.supplyAsync(() -> batcher.embed("b"), requests);
         Thread.sleep(200);
 
         assertThatThrownBy(() -> batcher.embed("c")).isInstanceOf(AiServerBusyException.class);
 
         release.countDown();
-        assertThat(first.get(2, TimeUnit.SECONDS)).containsExactly(vectorOf("a"));
-        assertThat(second.get(2, TimeUnit.SECONDS)).containsExactly(vectorOf("b"));
+        assertThat(first.get(2, TimeUnit.SECONDS).vector()).containsExactly(vectorOf("a"));
+        assertThat(second.get(2, TimeUnit.SECONDS).vector()).containsExactly(vectorOf("b"));
         // 자리가 돌아오면 다시 받는다
-        assertThat(batcher.embed("d")).containsExactly(vectorOf("d"));
+        assertThat(batcher.embed("d").vector()).containsExactly(vectorOf("d"));
     }
 
     @Test
@@ -106,7 +112,7 @@ class EmbeddingBatcherTest {
         when(client.embedAll(anyList())).thenAnswer(invocation -> {
             release.await();
             List<String> texts = invocation.getArgument(0);
-            return texts.stream().map(EmbeddingBatcherTest::vectorOf).toList();
+            return texts.stream().map(EmbeddingBatcherTest::embeddingOf).toList();
         });
         start(1, 60, Duration.ofMillis(300));
 
@@ -120,10 +126,10 @@ class EmbeddingBatcherTest {
         when(client.embedAll(anyList())).thenThrow(new AiServerException("AI 서버 통신에 실패했습니다."));
         start(2, 60, Duration.ofSeconds(5));
 
-        CompletableFuture<float[]> first = CompletableFuture.supplyAsync(() -> batcher.embed("a"), requests);
-        CompletableFuture<float[]> second = CompletableFuture.supplyAsync(() -> batcher.embed("b"), requests);
+        CompletableFuture<QueryEmbedding> first = CompletableFuture.supplyAsync(() -> batcher.embed("a"), requests);
+        CompletableFuture<QueryEmbedding> second = CompletableFuture.supplyAsync(() -> batcher.embed("b"), requests);
 
-        for (CompletableFuture<float[]> result : List.of(first, second))
+        for (CompletableFuture<QueryEmbedding> result : List.of(first, second))
         {
             assertThatThrownBy(() -> result.get(2, TimeUnit.SECONDS))
                     .hasCauseInstanceOf(AiServerException.class)
