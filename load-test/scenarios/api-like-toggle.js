@@ -15,13 +15,15 @@ import { record } from '../lib/metrics.js';
 import { pick } from '../lib/users.js';
 import { likeBoard, unlikeBoard } from '../lib/api.js';
 
+// 보드 id 범위는 run-sweep.sh가 DB에서 읽어 넘긴다. prepare.sh로 다시 만들면 시퀀스가 이어져 1부터 시작하지 않는다.
+const MIN_BOARD_ID = Number(__ENV.MIN_BOARD_ID || 1);
 const MAX_BOARD_ID = Number(__ENV.MAX_BOARD_ID || 250800);
 
 export const options = arrival({ p95: 500 });
 
 export default function () {
   const token = pick();
-  const boardId = 1 + Math.floor(Math.random() * MAX_BOARD_ID);
+  const boardId = MIN_BOARD_ID + Math.floor(Math.random() * (MAX_BOARD_ID - MIN_BOARD_ID + 1));
   record(likeBoard(token, boardId));
   record(unlikeBoard(token, boardId));
 }

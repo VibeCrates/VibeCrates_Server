@@ -40,6 +40,10 @@ OUT_DIR="load-test/results/sweep-${NAME}-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT_DIR"
 
 PG="docker exec -e PGPASSWORD=$POSTGRESQL_PASSWORD postgres_server psql -U $POSTGRESQL_USERNAME -d crates -t -A -c"
+# 좋아요 시나리오가 고를 보드 id 범위. 시딩 보드는 id가 이어져 있다(prepare.sh가 다시 만들면 시퀀스가 이어져 1부터가 아니다).
+BOARD_ID_RANGE=$($PG "SELECT min(id), max(id) FROM board")
+IFS="|" read -r MIN_BOARD_ID MAX_BOARD_ID <<< "$BOARD_ID_RANGE"
+echo "보드 id 범위: ${MIN_BOARD_ID} ~ ${MAX_BOARD_ID}"
 
 # 그 단계에서 DB 시간을 가장 많이 쓴 쿼리. 부하 중에는 백분위가 없어 평균과 총합 비중으로 본다.
 dump_pgss() {
@@ -62,6 +66,7 @@ run_step() {
         summary=$(mktemp -t k6sum)
     fi
     k6 run --quiet -e RATE="$rate" -e DURATION="$duration" -e TOKENS_FILE="$TOKENS_FILE" -e SKIP_AI="${SKIP_AI:-0}" \
+        -e MIN_BOARD_ID="$MIN_BOARD_ID" -e MAX_BOARD_ID="$MAX_BOARD_ID" \
         --summary-export="$summary" "$SCENARIO" \
         > "${OUT_DIR}/${tag:-warmup}.log" 2>&1 || true
     if [ -n "$sampler_pid" ]; then kill "$sampler_pid" 2>/dev/null || true; wait "$sampler_pid" 2>/dev/null || true; fi
