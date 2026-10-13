@@ -14,7 +14,9 @@
 // 하나라도 넘으면 그 단계는 실패다. 엔드포인트별 값은 run-sweep.sh가 rateN-endpoints.txt로 남긴다.
 import { record } from '../lib/metrics.js';
 import { anyToken, pick } from '../lib/users.js';
-import { randomKeyword, KEYWORDS } from '../lib/keywords.js';
+import { KEYWORDS } from '../lib/keywords.js';
+// 검색 보드만 조합 검색어를 쓴다(SEARCH_KEYWORD_MODE). 콘텐츠 제목 검색은 keywords.js 그대로다.
+import { nextSearchKeyword } from '../lib/search-keywords.js';
 // 시나리오 함수 이름(popular, archive)과 겹치지 않게 api로 묶어 가져온다. k6의 exec는 내보낸 함수 이름을 찾는다.
 import * as api from '../lib/api.js';
 
@@ -93,7 +95,7 @@ export function content_search() {
   const k = LONG_KEYWORDS[Math.floor(Math.random() * LONG_KEYWORDS.length)];
   record(api.searchContents(pick(), k), tag('content_search'));
 }
-export function search_board() { record(api.searchBoard(pick(), randomKeyword()), tag('search_board')); }
+export function search_board() { record(api.searchBoard(pick(), nextSearchKeyword()), tag('search_board')); }
 export function content_detail({ contents }) {
   const c = contents[Math.floor(Math.random() * contents.length)];
   record(api.contentDetail(pick(), c.dtype, c.id), tag('content_detail'));
