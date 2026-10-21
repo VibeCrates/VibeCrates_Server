@@ -45,6 +45,9 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/auth/**").permitAll()       // 로그인, 회원가입
                         .requestMatchers("/oauth2/**", "/login/**").permitAll() // OAuth2 리다이렉트
+                        // 로드 밸런서 헬스 체크. 상태(UP/DOWN)만 나가고 세부 정보는 숨겨진다(show-details 기본 never).
+                        // 외부에서는 CloudFront가 /actuator를 넘기지 않아 닿지 않는다.
+                        .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                         .anyRequest().authenticated()
                 )
                 .exceptionHandling(exceptions -> exceptions
