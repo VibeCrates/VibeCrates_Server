@@ -37,8 +37,8 @@ docker compose --env-file crates_server.env -f docker-compose.yml -f docker-comp
 `BACKEND_CPUS=2 docker compose ... up -d backend`로 한다. redis·minio는 측정할 API가 거치지 않아 두지 않는다.
 커넥션 풀은 측정용 값이 아니라 운영 값이라 `application.yaml`에 있다(10개).
 
-> **qdrant는 볼륨이 없다.** 덧씌우기를 처음 적용하거나 qdrant 상한을 바꾸면 컨테이너가 재생성되어 벡터가 사라지고,
-> backend가 뜰 때 다시 적재한다. postgres는 이름 있는 볼륨이라 시딩한 데이터가 남는다.
+> qdrant와 postgres는 이름 있는 볼륨에 저장한다. 덧씌우기를 적용하거나 상한을 바꿔 컨테이너가 재생성돼도
+> 벡터와 시딩한 데이터가 남는다. 처음부터 다시 만들려면 `down -v`로 볼륨까지 지운다.
 
 처음부터 띄울 때(`down -v` 후) 기동에 4~5분 걸린다(콘텐츠 18만 건 시딩 + 이미지 업로드 + Qdrant 적재).
 
