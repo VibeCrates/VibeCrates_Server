@@ -63,8 +63,10 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
-#    volumes:
-#      - ./qdrant_data:/qdrant/storage  # 데이터 영구 저장을 위한 로컬 폴더 연결
+    # 컨테이너를 다시 만들어도 벡터가 남도록 이름 있는 볼륨에 둔다(postgres_data와 같은 방식).
+    # 없으면 compose 설정을 바꾼 뒤 up만 해도 컬렉션이 사라지고, 기동 때 CSV에서 다시 적재한다.
+    volumes:
+      - qdrant_data:/qdrant/storage
     restart: unless-stopped
 
   # PostgreSQL: 관계형 데이터의 심장 (Main DB + Log)
