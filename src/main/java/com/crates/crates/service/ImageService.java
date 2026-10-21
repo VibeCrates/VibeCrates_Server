@@ -1,16 +1,12 @@
 package com.crates.crates.service;
 
-import io.minio.MinioClient;
-import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-@RequiredArgsConstructor
 @Service
 public class ImageService {
 
-    private final MinioClient minioClient;
-
+    /** 브라우저가 이미지를 직접 받는 주소. 로컬은 MinIO 버킷, 운영은 CloudFront의 /images 경로다. */
     @Value("${storage.bucket-url}")
     private String bucketUrl;
 

@@ -43,9 +43,6 @@ dependencies {
 	// runtimeOnly가 아니라 implementation으로 컴파일 클래스패스에 올림
 	implementation 'org.postgresql:postgresql'
 
-	// MinIO SDK (이미지 업로드/다운로드용)
-	implementation 'io.minio:minio:8.5.7'
-
 	// Qdrant Java Client (벡터 DB 통신용)
 	//
 	// 서버 버전과 반드시 함께 움직여야 한다(docker-compose.yml의 qdrant 이미지 태그).
@@ -62,7 +59,7 @@ dependencies {
 	implementation 'com.google.guava:guava:32.1.3-jre'          // grpc가 요구하는 32.1.3의 JVM 판
 	implementation 'io.grpc:grpc-api:1.65.1'                    // QdrantConfig가 참조하는 ManagedChannel
 
-	// S3Client 클래스 import
+	// 이미지 저장소. 로컬 MinIO와 운영 S3를 같은 S3Client로 부른다(S3Config).
 	implementation 'software.amazon.awssdk:s3:2.25.11' // SDK v2
 
 	// JWT
