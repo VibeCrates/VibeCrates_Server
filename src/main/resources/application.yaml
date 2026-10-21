@@ -111,6 +111,13 @@ management:
         "[http.server.requests]": 0.5, 0.95, 0.99          # 사용자가 겪는 응답 시간
         "[crates.user.vector.recalculation]": 0.5, 0.95, 0.99  # 취향 벡터 재계산
         "[hikaricp.connections.acquire]": 0.5, 0.95, 0.99  # 커넥션 획득 대기. 풀 포화의 선행 신호다
+  # /actuator/health/liveness, /actuator/health/readiness를 연다. 로드 밸런서(ALB) 헬스 체크는 readiness를 본다.
+  # 전체 /actuator/health는 Redis·DB 상태까지 합치는데, Redis는 캐시일 뿐이라(없으면 계산해서 응답한다)
+  # Redis가 죽었다고 backend를 비정상으로 보고 교체하면 오히려 장애가 커진다.
+  endpoint:
+    health:
+      probes:
+        enabled: true
   health:
     redis:
       enabled: true
@@ -163,7 +170,8 @@ ai:
           movie: classpath:data/movie_vectors.csv
           music: classpath:data/music_vectors.csv
   server:
-    base-url: http://100.77.133.40:8000  # AI 서버(Tailscale IP). 로컬 단독 테스트 시 http://localhost:8000
+    # AI 서버(Tailscale IP). 배포 위치가 정해지지 않아 환경 변수로 바꿀 수 있게 둔다. 로컬 단독 테스트 시 http://localhost:8000
+    base-url: ${AI_SERVER_BASE_URL:http://100.77.133.40:8000}
     # 묶음 임베딩 계약: {"query": ["...", ...]} -> {"vectors": [[...], ...], "model_version": "..."} (순서 그대로)
     embedding-path: /api/v1/embeddings
     # 연결은 짧게 둔다. AI 서버가 꺼지면(2026-10-10 Tailscale 끊김) 빨리 실패해야 다른 요청이 밀리지 않는다.

@@ -1,0 +1,90 @@
+# 운영(AWS) 프로파일. ECS 작업 정의가 켠다(SPRING_PROFILES_ACTIVE=prod).
+#
+# 로컬과 달라야 하는 것만 둔다. 풀 크기·open-in-view·임베딩 묶음처럼 운영에서도 같은 값은 application.yaml에 있다.
+# 주소와 비밀값은 모두 환경 변수로 받는다. 비밀값(DB 비밀번호, JWT, OAuth 시크릿, Qdrant API 키)은
+# SSM Parameter Store에 두고 작업 정의의 secrets로 주입한다. 이 파일과 이미지에는 들어가지 않는다.
+#
+# 받는 환경 변수
+#   SITE_URL                 사용자가 들어오는 주소(https://<도메인>). OAuth 콜백·이미지 주소를 여기서 만든다
+#   DB_URL                   jdbc:postgresql://<RDS 엔드포인트>:5432/crates?sslmode=require
+#   POSTGRESQL_USERNAME, POSTGRESQL_PASSWORD
+#   REDIS_HOST               ElastiCache 기본 엔드포인트
+#   QDRANT_HOST, QDRANT_API_KEY
+#   STORAGE_BUCKET_NAME      이미지 버킷 이름
+#   AI_SERVER_BASE_URL       application.yaml이 읽는다(위치 미정이라 주소만 바꾼다)
+#   JWT_SECRET_KEY, GOOGLE_*, KAKAO_*, NAVER_*   application.yaml이 읽는다
+
+spring:
+  datasource:
+    url: ${DB_URL}
+  jpa:
+    # 개발 편의로 켜 둔 SQL 출력을 끈다(application-loadtest.yaml과 같은 이유). 운영에서는 바인딩 값에
+    # 사용자 정보가 섞여 로그로 새고, 요청마다 쿼리를 찍는 비용이 응답 시간과 로그 요금으로 돌아온다.
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+  data:
+    redis:
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT:6379}
+      # ElastiCache는 전송 중 암호화(TLS)를 켜고 만든다. 끄고 만들었다면 false로 준다.
+      ssl:
+        enabled: ${REDIS_SSL_ENABLED:true}
+  security:
+    oauth2:
+      client:
+        registration:
+          # 로컬은 localhost:8080으로 고정돼 있다. 운영은 요청이 들어온 주소로 만든다 — CloudFront → ALB를 거쳐도
+          # 아래 forward-headers-strategy 덕분에 https://<도메인>/login/oauth2/code/{id}가 된다.
+          # 카카오·네이버 개발자 콘솔에 이 주소를 그대로 등록해야 한다.
+          kakao:
+            redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
+          naver:
+            redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
+
+server:
+  # CloudFront(HTTPS) → ALB(HTTPS) → 컨테이너(HTTP 8080)로 들어온다. 그대로 두면 앱이 자기 주소를 http로 알아
+  # OAuth 콜백 주소가 http로 만들어진다. ALB가 붙이는 X-Forwarded-Proto를 Tomcat이 믿게 한다
+  # (ALB는 VPC 사설 IP라 Tomcat의 기본 신뢰 대역 안에 있다). Host는 CloudFront가 원래 도메인을 그대로 넘긴다.
+  forward-headers-strategy: native
+  # 롤링 배포 때 새 요청은 받지 않고 처리 중인 요청을 끝낸 뒤 내려간다. Spring Boot 3.4부터 기본값이지만
+  # 배포가 이 동작에 기대므로 명시한다. ALB 대상 그룹의 등록 취소 지연(deregistration delay)보다 짧게 끝나야 한다.
+  shutdown: graceful
+
+ai:
+  vectorstore:
+    qdrant:
+      host: ${QDRANT_HOST}
+      api-key: ${QDRANT_API_KEY}
+      # 운영 벡터는 로컬에서 만든 스냅샷을 복원해 넣는다. 적재용 CSV(수 GB)는 git에도 운영 이미지에도 없으므로
+      # 기동 때 적재를 끈다. 켜 두면 파일을 찾지 못해 기동이 실패한다.
+      query-load:
+        enabled: false
+      load:
+        enabled: false
+
+storage:
+  # 비우면 리전의 AWS S3로 가고, 자격 증명은 ECS 작업 역할을 쓴다(S3Config).
+  endpoint: ""
+  access-key: ""
+  secret-key: ""
+  bucket-name: ${STORAGE_BUCKET_NAME}
+  # 브라우저는 S3가 아니라 CloudFront의 /images 경로로 받는다(버킷은 비공개, OAC로만 읽힌다).
+  bucket-url: ${SITE_URL}/images
+
+app:
+  oauth2:
+    # 로그인 성공 후 토큰을 들고 돌아갈 프론트 주소.
+    redirect-uri: ${SITE_URL}/auth/callback
+
+# 운영 데이터는 덤프 복원으로 넣는다. Flyway 이력이 함께 옮겨지므로 시딩 마이그레이션은 다시 돌지 않지만,
+# 혹시 돌더라도 외부 이미지를 내려받아 올리지 않게 막아 둔다.
+seed:
+  image-upload:
+    limit: 0
+
+logging:
+  level:
+    org.hibernate.SQL: WARN
+    org.hibernate.type.descriptor.sql.BasicBinder: WARN
