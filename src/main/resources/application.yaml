@@ -211,24 +211,16 @@ ai:
     # 고른 콘텐츠만으로 다시 계산한다.
 
 # ---------------------------------
-# ✅ S3 ( minIo )
-# application-local.yml (로컬 MinIO)
+# ✅ 이미지 저장소 — 로컬은 MinIO. 같은 S3Client로 부르고(S3Config), 운영(AWS S3) 값은 application-prod.yaml에 있다.
 # ---------------------------------
 storage:
-  endpoint: http://localhost:9000   # MinIO 서버의 대문 주소
+  endpoint: http://localhost:9000   # MinIO 서버 주소. 비우면 리전의 AWS S3로 간다
+  region: ap-northeast-2
   bucket-name: content-bucket   # 서버 안에 만든 특정 저장 공간 이름
-  bucket-url: http://localhost:9000/content-bucket    # 이미지들에 접근하기 위한 기본 경로
+  bucket-url: http://localhost:9000/content-bucket    # 브라우저가 이미지를 받는 기본 경로
+  # MinIO 계정. 비우면 AWS 기본 자격 증명 체인(운영은 ECS 작업 역할)을 쓴다.
   access-key: ${STORAGE_ACCESS_KEY}
   secret-key: ${STORAGE_SECRET_KEY}
-
-# ---------------------------------
-# application-prod.yml (운영 S3)
-# ---------------------------------
-#storage:
-#  bucket-name: content-bucket
-#  bucket-url: https://content-bucket.s3.ap-northeast-2.amazonaws.com
-#  access-key: ${AWS_ACCESS_KEY}
-#  secret-key: ${AWS_SECRET_KEY}
 
 
 # ---------------------------------

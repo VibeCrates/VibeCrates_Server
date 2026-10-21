@@ -1,13 +1,12 @@
 package com.crates.crates.seed;
 
-import io.minio.BucketExistsArgs;
-import io.minio.MakeBucketArgs;
-import io.minio.MinioClient;
-import io.minio.PutObjectArgs;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
 
 import java.io.InputStream;
 import java.net.URI;
@@ -30,7 +29,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
 
 /**
- * CSV의 원본 이미지 URL을 내려받아 곧바로 MinIO로 흘려보내고,
+ * CSV의 원본 이미지 URL을 내려받아 곧바로 이미지 저장소(로컬 MinIO, 운영 S3 — S3Config)로 흘려보내고,
  * 성공한 건만 content.s3_object_key / content.image_extension에 반영한다.
  *
  * <p>시딩 마이그레이션이 쥐고 있는 커넥션을 그대로 받아 쓴다. 마이그레이션의 INSERT는
@@ -45,9 +44,6 @@ import java.util.concurrent.Semaphore;
 @RequiredArgsConstructor
 public class ContentImageUploader {
 
-    /** MinIO 멀티파트 최소 파트 크기. Content-Length를 못 얻었을 때만 쓴다. */
-    private static final long UNKNOWN_SIZE_PART = 5L * 1024 * 1024;
-
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
 
@@ -60,7 +56,7 @@ public class ContentImageUploader {
             WHERE id = ?
             """;
 
-    private final MinioClient minioClient;
+    private final S3Client s3Client;
 
     @Value("${storage.bucket-name}")
     private String bucketName;
@@ -126,12 +122,16 @@ public class ContentImageUploader {
         return targets;
     }
 
-    private void ensureBucket() throws Exception {
-        boolean exists = minioClient.bucketExists(
-                BucketExistsArgs.builder().bucket(bucketName).build());
-        if (!exists) {
-            minioClient.makeBucket(MakeBucketArgs.builder().bucket(bucketName).build());
-            log.info("MinIO 버킷을 생성했습니다: {}", bucketName);
+    /**
+     * 버킷이 없으면 만든다. 로컬 MinIO를 처음 띄웠을 때를 위한 것이다.
+     * 운영 S3 버킷은 인프라에서 만들고, 운영은 업로드 상한이 0이라 여기까지 오지 않는다.
+     */
+    private void ensureBucket() {
+        try {
+            s3Client.headBucket(request -> request.bucket(bucketName));
+        } catch (NoSuchBucketException e) {
+            s3Client.createBucket(request -> request.bucket(bucketName));
+            log.info("이미지 버킷을 생성했습니다: {}", bucketName);
         }
     }
 
@@ -168,7 +168,7 @@ public class ContentImageUploader {
     }
 
     /**
-     * 한 건을 내려받아 MinIO에 올린다. 응답 스트림을 그대로 putObject에 넘기므로
+     * 한 건을 내려받아 이미지 저장소에 올린다. 응답 스트림을 그대로 putObject에 넘기므로
      * 로컬 디스크에 떨어지지 않는다.
      *
      * <p>실패해도 예외를 던지지 않는다. 마이그레이션 트랜잭션 안에서 도는 코드라
@@ -204,20 +204,22 @@ public class ContentImageUploader {
                     return Optional.empty();
                 }
 
-                // Content-Length를 알면 SDK가 파트 버퍼를 잡지 않고 그대로 흘려보낸다.
+                // S3 PutObject는 길이를 먼저 알아야 한다. Content-Length가 오면 스트림을 그대로 흘려보내고,
+                // 없으면 메모리에 모은다. 포스터·앨범 커버라 한 건이 수백 KB 수준이다.
                 long size = response.headers().firstValueAsLong("Content-Length").orElse(-1L);
-                long partSize = (size < 0) ? UNKNOWN_SIZE_PART : -1L;
+                RequestBody requestBody = (size >= 0)
+                        ? RequestBody.fromInputStream(body, size)
+                        : RequestBody.fromBytes(body.readAllBytes());
 
                 // ImageService가 "키 + . + 확장자"로 URL을 조립하므로, DB에 넣을 키에는
                 // 확장자를 붙이지 않는다. 실제 오브젝트 이름에만 붙인다.
                 String objectKey = keyPrefix + "/" + target.contentId();
 
-                minioClient.putObject(PutObjectArgs.builder()
-                        .bucket(bucketName)
-                        .object(objectKey + "." + extension)
-                        .stream(body, size, partSize)
-                        .contentType(contentTypeOf(extension))
-                        .build());
+                s3Client.putObject(put -> put
+                                .bucket(bucketName)
+                                .key(objectKey + "." + extension)
+                                .contentType(contentTypeOf(extension)),
+                        requestBody);
 
                 return Optional.of(new UploadResult(target.contentId(), objectKey, extension));
             }
