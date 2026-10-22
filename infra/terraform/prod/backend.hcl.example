@@ -1,0 +1,6 @@
+# 복사해 backend.hcl로 만든다. bucket은 bootstrap의 출력값이다.
+bucket       = "crates-tfstate-<계정 ID>"
+key          = "prod/terraform.tfstate"
+region       = "ap-northeast-2"
+encrypt      = true
+use_lockfile = true

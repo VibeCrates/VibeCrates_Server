@@ -1,0 +1,16 @@
+# 공급자 바이너리·모듈 캐시
+.terraform/
+
+# 상태는 S3에 둔다. 로컬에 생기는 것(bootstrap 포함)은 올리지 않는다 — 리소스 ID와 일부 값이 들어 있다.
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+
+# 계정마다 다른 상태 버킷 이름
+backend.hcl
+
+# 환경 켜기·끄기 상태. 사람마다·시점마다 달라 커밋하지 않는다(scripts/env-*.sh가 쓴다).
+env.auto.tfvars
+
+# .terraform.lock.hcl은 커밋한다. 공급자 버전을 모두가 같게 맞춘다.
