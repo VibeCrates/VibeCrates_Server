@@ -21,9 +21,11 @@ resource "aws_db_parameter_group" "postgres" {
   }
 
   # 평문 연결을 거절한다. backend는 sslmode=require로 붙는다.
+  # 정적 파라미터라 AWS가 적용 방식을 pending-reboot로 저장한다. 적지 않으면 plan마다 차이가 난다.
   parameter {
-    name  = "rds.force_ssl"
-    value = "1"
+    name         = "rds.force_ssl"
+    value        = "1"
+    apply_method = "pending-reboot"
   }
 
   # 1초 넘는 쿼리를 로그에 남긴다(CloudWatch Logs로 내보냄).
