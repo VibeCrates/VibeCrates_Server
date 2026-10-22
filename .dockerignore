@@ -11,3 +11,4 @@ load-test
 .DS_Store
 .antigravitycli
 crates_server.env
+infra

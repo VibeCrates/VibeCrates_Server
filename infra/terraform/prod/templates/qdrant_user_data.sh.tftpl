@@ -1,0 +1,55 @@
+#!/bin/bash
+# Qdrant 호스트 첫 기동 스크립트(cloud-init이 최초 1회 실행한다). Amazon Linux 2023 arm64.
+# 이후 정지·시작에서는 docker의 --restart와 /etc/fstab이 상태를 되살린다.
+set -euxo pipefail
+
+dnf install -y docker amazon-cloudwatch-agent
+systemctl enable --now docker
+
+# ── 데이터 볼륨 ──────────────────────────────────────────────────
+# 인스턴스와 따로 만든 EBS다(qdrant.tf). Nitro 인스턴스에서는 NVMe로 붙고, 장치 이름 대신
+# 볼륨 ID가 들어간 고정 경로로 찾는다. 붙는 데 시간이 걸려 기다린다.
+DEV=/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${volume_serial}
+for i in $(seq 1 150); do
+  [ -e "$DEV" ] && break
+  sleep 2
+done
+[ -e "$DEV" ] || { echo "데이터 볼륨이 붙지 않았습니다: $DEV" >&2; exit 1; }
+
+# 처음 붙인 빈 볼륨만 포맷한다. 인스턴스를 다시 만들어 기존 볼륨을 붙인 경우에는 그대로 쓴다.
+if ! blkid "$DEV"; then
+  mkfs.xfs "$DEV"
+fi
+mkdir -p /var/lib/qdrant
+grep -q " /var/lib/qdrant " /etc/fstab || echo "$DEV /var/lib/qdrant xfs defaults,nofail 0 2" >> /etc/fstab
+mount -a
+
+# ── Qdrant ───────────────────────────────────────────────────────
+# API 키는 SSM Parameter Store에서 읽는다(인스턴스 역할이 이 파라미터만 읽을 수 있다).
+API_KEY=$(aws ssm get-parameter --region ${region} --name "${api_key_param}" --with-decryption \
+  --query Parameter.Value --output text)
+
+docker rm -f qdrant 2>/dev/null || true
+# 이미지 태그는 backend의 io.qdrant:client 버전과 맞춘다. 어긋나면 backend가 기동을 멈춘다.
+docker run -d --name qdrant --restart unless-stopped \
+  -p 6333:6333 -p 6334:6334 \
+  -v /var/lib/qdrant:/qdrant/storage \
+  -e QDRANT__SERVICE__API_KEY="$API_KEY" \
+  qdrant/qdrant:${qdrant_version}
+
+# ── 메모리·디스크 지표 ───────────────────────────────────────────
+# EC2 기본 지표에는 메모리가 없다. Qdrant는 벡터가 메모리(페이지 캐시)에 올라가야 빨라서 따로 본다.
+cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'JSON'
+{
+  "metrics": {
+    "namespace": "Crates/EC2",
+    "append_dimensions": { "InstanceId": "$${aws:InstanceId}" },
+    "metrics_collected": {
+      "mem": { "measurement": ["mem_used_percent", "mem_available"] },
+      "disk": { "measurement": ["used_percent"], "resources": ["/var/lib/qdrant"] }
+    }
+  }
+}
+JSON
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json

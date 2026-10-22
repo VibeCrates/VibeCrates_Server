@@ -1,0 +1,40 @@
+#!/bin/bash
+# Tailscale 중계 첫 기동 스크립트. Amazon Linux 2023 arm64.
+#
+# backend(Fargate)는 Tailscale을 직접 붙일 수 없어서, VPC 라우팅 테이블이 Tailscale 대역(100.64.0.0/10)을
+# 이 인스턴스로 보낸다(network.tf). 여기서는 받은 트래픽을 Tailscale 망으로 넘기되, 출발지를 이 인스턴스의
+# Tailscale 주소로 바꾼다(SNAT). 그러면 AI 서버 쪽에서 VPC 대역으로 가는 경로를 설정할 필요가 없다.
+set -euxo pipefail
+
+dnf install -y iptables-nft
+curl -fsSL https://tailscale.com/install.sh | sh
+systemctl enable --now tailscaled
+
+cat > /etc/sysctl.d/99-forward.conf <<'CONF'
+net.ipv4.ip_forward = 1
+CONF
+sysctl -p /etc/sysctl.d/99-forward.conf
+
+# 인증 키는 SSM Parameter Store에서 읽는다. 처음 한 번 망에 들어갈 때만 쓴다.
+AUTH_KEY=$(aws ssm get-parameter --region ${region} --name "${auth_key_param}" --with-decryption \
+  --query Parameter.Value --output text)
+tailscale up --authkey="$AUTH_KEY" --hostname="${hostname}" --accept-routes=false
+
+# 재부팅·정지 뒤에도 SNAT 규칙이 다시 걸리도록 서비스로 둔다.
+cat > /etc/systemd/system/vpc-to-tailnet-snat.service <<UNIT
+[Unit]
+Description=SNAT VPC traffic into the tailnet
+After=tailscaled.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/iptables -t nat -A POSTROUTING -s ${vpc_cidr} -o tailscale0 -j MASQUERADE
+ExecStop=/usr/sbin/iptables -t nat -D POSTROUTING -s ${vpc_cidr} -o tailscale0 -j MASQUERADE
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now vpc-to-tailnet-snat.service
