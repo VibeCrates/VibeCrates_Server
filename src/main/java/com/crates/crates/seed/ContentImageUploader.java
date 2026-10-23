@@ -8,26 +8,31 @@ import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
 
-import java.io.InputStream;
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Optional;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
 /**
@@ -40,6 +45,10 @@ import java.util.stream.Collectors;
  *
  * <p>다운로드/업로드는 순수 네트워크 I/O라 가상 스레드로 병렬화하되, JDBC Connection은
  * 스레드 안전하지 않으므로 DB 반영은 업로드가 모두 끝난 뒤 호출 스레드에서 한 번에 처리한다.
+ *
+ * <p><b>실패는 원인과 함께 돌려준다(Failure).</b> 원인을 남기지 않으면 "원본이 지워졌다"와 "요청 제한에 걸렸다"와
+ * "느려서 시간을 넘겼다"를 가를 수 없다. 2026-10-23 운영 채우기에서 Open Library의 요청 제한(429)을 원본 삭제와
+ * 구분하지 못해 직접 원인을 캐야 했다.</p>
  */
 @Slf4j
 @Component
@@ -47,7 +56,6 @@ import java.util.stream.Collectors;
 public class ContentImageUploader {
 
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
-    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
 
     // 컬럼명이 s3_object_key가 아니라 s3object_key인 건 오타가 아니다.
     // Hibernate 기본 네이밍 전략은 소문자->대문자 경계에만 _를 넣는데,
@@ -71,6 +79,15 @@ public class ContentImageUploader {
     @Value("${seed.image-upload.concurrency:30}")
     private int concurrency;
 
+    /**
+     * 한 건을 내려받는 데 쓰는 최대 시간(연결 + 응답 + 본문 전체).
+     *
+     * <p>HttpRequest.timeout은 응답 헤더가 올 때까지만 잰다. 본문을 아주 느리게 보내는 서버(예: archive.org로 넘기는
+     * coverartarchive)에서는 요청이 끝없이 붙잡힐 수 있어, 본문까지 받은 뒤를 기준으로 따로 끊는다.</p>
+     */
+    @Value("${seed.image-upload.request-timeout:30s}")
+    private Duration requestTimeout;
+
     // 여러 건을 처리하므로 클라이언트는 한 번만 만들어 재사용한다.
     // h2c 협상에서 본문이 비어 오는 사례를 겪은 적이 있어 HTTP/1.1로 고정.
     private final HttpClient httpClient = HttpClient.newBuilder()
@@ -82,7 +99,50 @@ public class ContentImageUploader {
     public record ImageTarget(long contentId, String sourceUrl) {
     }
 
+    /** 이미지를 못 올린 원인. 원인마다 대응이 다르다(다시 시도할 만한가, 출처를 바꿔야 하나, 원본이 없나). */
+    public enum Failure {
+        /** http(s) 주소가 아니다(예: 원본 CSV의 "no"). 원본에 이미지가 없다는 뜻 */
+        INVALID_URL,
+        /** 200이 아닌 응답. detail에 상태 코드(404 원본 삭제, 429 요청 제한, 5xx 원본 서버 오류) */
+        HTTP_STATUS,
+        /** request-timeout 안에 다 받지 못했다. 느린 서버면 시간을 늘려 다시 시도할 만하다 */
+        TIMEOUT,
+        /** 연결 실패·끊김 등 네트워크 오류 */
+        NETWORK,
+        /** 받았지만 jpg·png·gif·webp가 아니다. detail에 Content-Type */
+        UNSUPPORTED_TYPE,
+        /** 저장소(S3·MinIO)에 올리다 실패했다 */
+        UPLOAD_ERROR,
+        /** 작업이 중단됐다 */
+        INTERRUPTED
+    }
+
+    public record FailedTarget(long contentId, String sourceUrl, Failure reason, String detail) {
+    }
+
+    /** 한 묶음의 결과. 대상 = uploaded + failures */
+    public record BatchResult(Set<Long> uploaded, List<FailedTarget> failures) {
+
+        public Map<Failure, Long> countByReason() {
+            Map<Failure, Long> counts = new EnumMap<>(Failure.class);
+            failures.forEach(f -> counts.merge(f.reason(), 1L, Long::sum));
+            return counts;
+        }
+    }
+
     private record UploadResult(long contentId, String objectKey, String extension) {
+    }
+
+    /** 한 건의 결과. 성공(result)이거나 실패(failure) 중 하나다. */
+    private record Outcome(UploadResult result, FailedTarget failure) {
+
+        static Outcome success(UploadResult result) {
+            return new Outcome(result, null);
+        }
+
+        static Outcome fail(ImageTarget target, Failure reason, String detail) {
+            return new Outcome(null, new FailedTarget(target.contentId(), target.sourceUrl(), reason, detail));
+        }
     }
 
     /**
@@ -103,9 +163,10 @@ public class ContentImageUploader {
             return 0;
         }
 
-        Set<Long> uploaded = uploadAndApply(connection, targets, keyPrefix);
-        log.info("[{}] 이미지 업로드 완료: 대상 {}건 중 {}건 성공", keyPrefix, targets.size(), uploaded.size());
-        return uploaded.size();
+        BatchResult result = uploadAndApply(connection, targets, keyPrefix);
+        log.info("[{}] 이미지 업로드 완료: 대상 {}건 중 {}건 성공, 실패 원인 {}",
+                keyPrefix, targets.size(), result.uploaded().size(), result.countByReason());
+        return result.uploaded().size();
     }
 
     /**
@@ -114,16 +175,21 @@ public class ContentImageUploader {
      * <p>시딩(seedImages)과 이미지 채우기 작업(ImageBackfillJob)이 함께 쓴다. 작업은 대상을 묶음으로 나눠
      * 묶음마다 부르므로, 중간에 끊겨도 반영된 묶음까지는 남는다.</p>
      *
-     * @return DB에 반영된 콘텐츠 id. 대상에 있는데 여기 없으면 실패한 것이다(원본 없음·형식 모름·네트워크 오류)
+     * @return 반영된 콘텐츠 id와, 실패한 대상의 원인
      */
-    public Set<Long> uploadAndApply(Connection connection, List<ImageTarget> targets, String keyPrefix) throws SQLException {
+    public BatchResult uploadAndApply(Connection connection, List<ImageTarget> targets, String keyPrefix) throws SQLException {
         if (targets.isEmpty()) {
-            return Set.of();
+            return new BatchResult(Set.of(), List.of());
         }
         ensureBucket();
-        List<UploadResult> results = uploadAll(targets, keyPrefix);
+        List<Outcome> outcomes = uploadAll(targets, keyPrefix);
+
+        List<UploadResult> results = outcomes.stream().map(Outcome::result).filter(r -> r != null).toList();
         applyResults(connection, results);
-        return results.stream().map(UploadResult::contentId).collect(Collectors.toSet());
+
+        return new BatchResult(
+                results.stream().map(UploadResult::contentId).collect(Collectors.toSet()),
+                outcomes.stream().map(Outcome::failure).filter(f -> f != null).toList());
     }
 
     private List<ImageTarget> fetchTargets(Connection connection, String selectSql, int limit) throws SQLException {
@@ -141,7 +207,7 @@ public class ContentImageUploader {
 
     /**
      * 버킷이 없으면 만든다. 로컬 MinIO를 처음 띄웠을 때를 위한 것이다.
-     * 운영 S3 버킷은 인프라에서 만들고, 운영은 업로드 상한이 0이라 여기까지 오지 않는다.
+     * 운영 S3 버킷은 인프라에서 만든다.
      */
     private void ensureBucket() {
         try {
@@ -152,9 +218,9 @@ public class ContentImageUploader {
         }
     }
 
-    private List<UploadResult> uploadAll(List<ImageTarget> targets, String keyPrefix) {
+    private List<Outcome> uploadAll(List<ImageTarget> targets, String keyPrefix) {
         Semaphore permits = new Semaphore(concurrency);
-        List<Future<Optional<UploadResult>>> futures = new ArrayList<>(targets.size());
+        List<Future<Outcome>> futures = new ArrayList<>(targets.size());
 
         // close()가 제출된 작업이 모두 끝날 때까지 대기한다.
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
@@ -170,82 +236,99 @@ public class ContentImageUploader {
             }
         }
 
-        List<UploadResult> results = new ArrayList<>(futures.size());
-        for (Future<Optional<UploadResult>> future : futures) {
+        List<Outcome> outcomes = new ArrayList<>(futures.size());
+        for (int i = 0; i < futures.size(); i++) {
             try {
-                future.get().ifPresent(results::add);
+                outcomes.add(futures.get(i).get());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new IllegalStateException("이미지 업로드가 중단됐습니다.", e);
             } catch (ExecutionException e) {
-                log.debug("이미지 업로드 작업이 비정상 종료됐습니다.", e.getCause());
+                // uploadOne은 예외를 던지지 않는다. 여기 오면 예상 밖의 오류라 원인을 남긴다.
+                outcomes.add(Outcome.fail(targets.get(i), Failure.NETWORK, String.valueOf(e.getCause())));
             }
         }
-        return results;
+        return outcomes;
     }
 
     /**
-     * 한 건을 내려받아 이미지 저장소에 올린다. 응답 스트림을 그대로 putObject에 넘기므로
-     * 로컬 디스크에 떨어지지 않는다.
+     * 한 건을 내려받아 이미지 저장소에 올린다.
      *
-     * <p>실패해도 예외를 던지지 않는다. 마이그레이션 트랜잭션 안에서 도는 코드라
-     * 한 건의 실패가 올라가면 시딩 전체가 롤백된다.
+     * <p>실패해도 예외를 던지지 않고 원인을 돌려준다. 마이그레이션 트랜잭션 안에서 도는 코드라
+     * 한 건의 실패가 올라가면 시딩 전체가 롤백된다.</p>
      */
-    private Optional<UploadResult> uploadOne(ImageTarget target, String keyPrefix) {
-        HttpRequest request = HttpRequest.newBuilder(URI.create(target.sourceUrl()))
-                .GET()
-                .timeout(REQUEST_TIMEOUT)
-                .build();
+    Outcome uploadOne(ImageTarget target, String keyPrefix) {
+        URI uri = toHttpUri(target.sourceUrl());
+        if (uri == null) {
+            return Outcome.fail(target, Failure.INVALID_URL, target.sourceUrl());
+        }
 
+        HttpResponse<byte[]> response;
+        CompletableFuture<HttpResponse<byte[]>> pending =
+                httpClient.sendAsync(HttpRequest.newBuilder(uri).GET().build(), HttpResponse.BodyHandlers.ofByteArray());
         try {
-            HttpResponse<InputStream> response =
-                    httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
-
-            try (InputStream body = response.body()) {
-                if (response.statusCode() != 200) {
-                    log.debug("이미지 다운로드 실패 (content {}): HTTP {}",
-                            target.contentId(), response.statusCode());
-                    return Optional.empty();
-                }
-
-                String contentType = response.headers().firstValue("Content-Type")
-                        .orElse("")
-                        .split(";")[0]
-                        .trim()
-                        .toLowerCase(Locale.ROOT);
-
-                String extension = resolveExtension(contentType, target.sourceUrl());
-                if (extension == null) {
-                    log.debug("확장자를 판별하지 못했습니다 (content {}): contentType={}",
-                            target.contentId(), contentType);
-                    return Optional.empty();
-                }
-
-                // S3 PutObject는 길이를 먼저 알아야 한다. Content-Length가 오면 스트림을 그대로 흘려보내고,
-                // 없으면 메모리에 모은다. 포스터·앨범 커버라 한 건이 수백 KB 수준이다.
-                long size = response.headers().firstValueAsLong("Content-Length").orElse(-1L);
-                RequestBody requestBody = (size >= 0)
-                        ? RequestBody.fromInputStream(body, size)
-                        : RequestBody.fromBytes(body.readAllBytes());
-
-                // ImageService가 "키 + . + 확장자"로 URL을 조립하므로, DB에 넣을 키에는
-                // 확장자를 붙이지 않는다. 실제 오브젝트 이름에만 붙인다.
-                String objectKey = keyPrefix + "/" + target.contentId();
-
-                s3Client.putObject(put -> put
-                                .bucket(bucketName)
-                                .key(objectKey + "." + extension)
-                                .contentType(contentTypeOf(extension)),
-                        requestBody);
-
-                return Optional.of(new UploadResult(target.contentId(), objectKey, extension));
-            }
+            // 본문까지 다 받은 시점으로 끊는다(requestTimeout 주석). 이미지는 한 장에 수백 KB라 메모리로 받는다.
+            response = pending.get(requestTimeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            pending.cancel(true);
+            return Outcome.fail(target, Failure.TIMEOUT, requestTimeout.toString());
         } catch (InterruptedException e) {
+            pending.cancel(true);
             Thread.currentThread().interrupt();
-            return Optional.empty();
-        } catch (Exception e) {
-            log.debug("이미지 처리 실패 (content {}): {}", target.contentId(), e.toString());
-            return Optional.empty();
+            return Outcome.fail(target, Failure.INTERRUPTED, null);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof HttpTimeoutException) {
+                return Outcome.fail(target, Failure.TIMEOUT, cause.getClass().getSimpleName());
+            }
+            return Outcome.fail(target, Failure.NETWORK, cause instanceof IOException
+                    ? cause.getClass().getSimpleName() + ": " + cause.getMessage()
+                    : String.valueOf(cause));
+        }
+
+        if (response.statusCode() != 200) {
+            return Outcome.fail(target, Failure.HTTP_STATUS, String.valueOf(response.statusCode()));
+        }
+
+        String contentType = response.headers().firstValue("Content-Type")
+                .orElse("")
+                .split(";")[0]
+                .trim()
+                .toLowerCase(Locale.ROOT);
+        String extension = resolveExtension(contentType, target.sourceUrl());
+        if (extension == null) {
+            return Outcome.fail(target, Failure.UNSUPPORTED_TYPE, contentType);
+        }
+
+        // ImageService가 "키 + . + 확장자"로 URL을 조립하므로, DB에 넣을 키에는
+        // 확장자를 붙이지 않는다. 실제 오브젝트 이름에만 붙인다.
+        String objectKey = keyPrefix + "/" + target.contentId();
+        try {
+            s3Client.putObject(put -> put
+                            .bucket(bucketName)
+                            .key(objectKey + "." + extension)
+                            .contentType(contentTypeOf(extension)),
+                    RequestBody.fromBytes(response.body()));
+        } catch (RuntimeException e) {
+            return Outcome.fail(target, Failure.UPLOAD_ERROR, e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
+        return Outcome.success(new UploadResult(target.contentId(), objectKey, extension));
+    }
+
+    /** http(s) 주소면 URI, 아니면 null. 원본 CSV에는 이미지가 없을 때 "no" 같은 값이 들어 있다. */
+    static URI toHttpUri(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        String lower = trimmed.toLowerCase(Locale.ROOT);
+        if (!lower.startsWith("http://") && !lower.startsWith("https://")) {
+            return null;
+        }
+        try {
+            return URI.create(trimmed);
+        } catch (IllegalArgumentException e) {
+            return null;
         }
     }
 
