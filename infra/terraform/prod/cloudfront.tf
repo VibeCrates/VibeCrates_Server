@@ -143,9 +143,11 @@ resource "aws_cloudfront_distribution" "main" {
     }
   }
 
+  # 허용 국가 밖에서 오면 CloudFront가 403을 돌려준다(backend까지 오지 않는다).
   restrictions {
     geo_restriction {
-      restriction_type = "none"
+      restriction_type = length(var.allowed_countries) > 0 ? "whitelist" : "none"
+      locations        = var.allowed_countries
     }
   }
 
