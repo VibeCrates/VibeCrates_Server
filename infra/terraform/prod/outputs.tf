@@ -32,6 +32,20 @@ output "images_bucket" {
   value = aws_s3_bucket.images.id
 }
 
+output "ops_bucket" {
+  description = "일회성 작업 입력(jobs/ 아래, 30일 뒤 삭제)"
+  value       = aws_s3_bucket.ops.id
+}
+
+# 일회성 ECS 작업(scripts/run-*.sh)을 backend와 같은 망·보안 그룹으로 띄우는 데 쓴다.
+output "app_subnet_ids" {
+  value = aws_subnet.app[*].id
+}
+
+output "backend_security_group_id" {
+  value = aws_security_group.backend.id
+}
+
 output "rds_endpoint" {
   value = aws_db_instance.main.address
 }

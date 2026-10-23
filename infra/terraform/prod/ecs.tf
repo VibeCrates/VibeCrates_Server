@@ -95,6 +95,12 @@ resource "aws_iam_role_policy" "ecs_task_images" {
         Effect   = "Allow"
         Action   = ["s3:ListBucket"] # HeadBucket과 "없는 키" 판별에 필요
         Resource = aws_s3_bucket.images.arn
+      },
+      {
+        # 일회성 작업(같은 작업 정의로 실행)의 입력 읽기. 서비스로 도는 backend는 쓰지 않는다.
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "${aws_s3_bucket.ops.arn}/jobs/*"
       }
     ]
   })
