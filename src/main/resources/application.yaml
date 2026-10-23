@@ -265,7 +265,22 @@ seed:
     limit: 10000      # 타입당 업로드 상한
     concurrency: 30   # 동시 요청 수. 외부 이미지 서버 차단을 피하려면 과하게 올리지 말 것.
 
+# 이미지가 없는 콘텐츠의 이미지를 원본 CSV URL에서 채우는 일회성 작업(ImageBackfillJob). 평소에는 꺼져 있다.
+# 켜서 띄울 때는 웹 서버와 주기 작업도 끈다:
+#   --job.image-backfill.enabled=true --spring.main.web-application-type=none --scheduler.enabled=false
+# 운영은 ECS 일회성 작업으로 돌리고 CSV 위치를 s3://로 넘긴다(infra/terraform/scripts/run-image-backfill.sh).
+job:
+  image-backfill:
+    enabled: false
+    book: classpath:data/book.csv
+    movie: classpath:data/movie.csv
+    music: classpath:data/music.csv
+    batch-size: 2000      # 묶음마다 DB에 반영한다. 끊겼을 때 다시 받는 양의 상한
+    limit-per-type: 0     # 종류마다 처리할 상한. 0이면 전부(시험 삼아 적게 돌릴 때만 쓴다)
+
 scheduler:
+  # 주기 작업 전체. 일회성 작업으로 앱을 띄울 때만 끈다(SchedulingConfig).
+  enabled: true
   refresh-token-cleanup:
     cron: "0 0 4 * * *"
   # 재계산이 유실된 취향 벡터를 뒤늦게 고치는 배치. 근거는 UserVectorBackfillService 주석 참고.
