@@ -97,9 +97,9 @@ resource "aws_iam_role_policy" "ecs_task_images" {
         Resource = aws_s3_bucket.images.arn
       },
       {
-        # 일회성 작업(같은 작업 정의로 실행)의 입력 읽기. 서비스로 도는 backend는 쓰지 않는다.
+        # 일회성 작업(같은 작업 정의로 실행)의 입력 읽기와 결과(실패 목록) 쓰기. 서비스로 도는 backend는 쓰지 않는다.
         Effect   = "Allow"
-        Action   = ["s3:GetObject"]
+        Action   = ["s3:GetObject", "s3:PutObject"]
         Resource = "${aws_s3_bucket.ops.arn}/jobs/*"
       }
     ]

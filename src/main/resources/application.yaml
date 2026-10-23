@@ -264,6 +264,7 @@ seed:
   image-upload:
     limit: 10000      # 타입당 업로드 상한
     concurrency: 30   # 동시 요청 수. 외부 이미지 서버 차단을 피하려면 과하게 올리지 말 것.
+    request-timeout: 30s  # 한 건을 본문까지 다 받는 최대 시간. 느린 원본 서버(coverartarchive 등)는 늘려서 다시 돌린다
 
 # 이미지가 없는 콘텐츠의 이미지를 원본 CSV URL에서 채우는 일회성 작업(ImageBackfillJob). 평소에는 꺼져 있다.
 # 켜서 띄울 때는 웹 서버와 주기 작업도 끈다:
@@ -277,6 +278,8 @@ job:
     music: classpath:data/music.csv
     batch-size: 2000      # 묶음마다 DB에 반영한다. 끊겼을 때 다시 받는 양의 상한
     limit-per-type: 0     # 종류마다 처리할 상한. 0이면 전부(시험 삼아 적게 돌릴 때만 쓴다)
+    types: book,movie,music  # 채울 종류. 일부만 다시 돌릴 때 줄인다
+    report-location:      # 실패 목록 CSV(s3://버킷/키 또는 file:경로). 비우면 남기지 않는다
 
 scheduler:
   # 주기 작업 전체. 일회성 작업으로 앱을 띄울 때만 끈다(SchedulingConfig).
