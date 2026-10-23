@@ -22,11 +22,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
+import java.util.stream.Collectors;
 
 /**
  * CSV의 원본 이미지 URL을 내려받아 곧바로 이미지 저장소(로컬 MinIO, 운영 S3 — S3Config)로 흘려보내고,
@@ -95,21 +97,36 @@ public class ContentImageUploader {
             return 0;
         }
 
-        List<ImageTarget> targets = fetchTargets(connection, selectSql);
+        List<ImageTarget> targets = fetchTargets(connection, selectSql, limit);
         if (targets.isEmpty()) {
             log.info("[{}] 업로드 대상 이미지가 없습니다.", keyPrefix);
             return 0;
         }
 
+        Set<Long> uploaded = uploadAndApply(connection, targets, keyPrefix);
+        log.info("[{}] 이미지 업로드 완료: 대상 {}건 중 {}건 성공", keyPrefix, targets.size(), uploaded.size());
+        return uploaded.size();
+    }
+
+    /**
+     * 주어진 대상을 내려받아 올리고, 성공한 것만 content에 반영한다.
+     *
+     * <p>시딩(seedImages)과 이미지 채우기 작업(ImageBackfillJob)이 함께 쓴다. 작업은 대상을 묶음으로 나눠
+     * 묶음마다 부르므로, 중간에 끊겨도 반영된 묶음까지는 남는다.</p>
+     *
+     * @return DB에 반영된 콘텐츠 id. 대상에 있는데 여기 없으면 실패한 것이다(원본 없음·형식 모름·네트워크 오류)
+     */
+    public Set<Long> uploadAndApply(Connection connection, List<ImageTarget> targets, String keyPrefix) throws SQLException {
+        if (targets.isEmpty()) {
+            return Set.of();
+        }
         ensureBucket();
         List<UploadResult> results = uploadAll(targets, keyPrefix);
         applyResults(connection, results);
-
-        log.info("[{}] 이미지 업로드 완료: 대상 {}건 중 {}건 성공", keyPrefix, targets.size(), results.size());
-        return results.size();
+        return results.stream().map(UploadResult::contentId).collect(Collectors.toSet());
     }
 
-    private List<ImageTarget> fetchTargets(Connection connection, String selectSql) throws SQLException {
+    private List<ImageTarget> fetchTargets(Connection connection, String selectSql, int limit) throws SQLException {
         List<ImageTarget> targets = new ArrayList<>();
         try (PreparedStatement ps = connection.prepareStatement(selectSql)) {
             ps.setInt(1, limit);
