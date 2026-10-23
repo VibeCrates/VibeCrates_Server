@@ -32,6 +32,14 @@ variable "domain_name" {
   default = ""
 }
 
+# CloudFront로 접속을 허용할 국가(ISO 3166-1 alpha-2). 비우면 제한하지 않는다.
+# IP로 국가를 판단하므로 VPN으로 우회할 수 있다 — 보안 장치라기보다 노출 범위(해외 크롤러·무작위 공격)를 줄이는 것이다.
+# 해외에서 시연하거나 팀원이 해외 VPN·로밍으로 접속해야 하면 그 나라를 더하거나 비운다.
+variable "allowed_countries" {
+  type    = list(string)
+  default = ["KR"]
+}
+
 # ── 네트워크 ─────────────────────────────────────────────────────
 variable "vpc_cidr" {
   type    = string

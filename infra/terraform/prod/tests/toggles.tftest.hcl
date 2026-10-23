@@ -138,6 +138,27 @@ run "domain_active" {
     condition     = length(aws_cloudfront_distribution.main[0].ordered_cache_behavior) == 4
     error_message = "API 3경로 + 이미지 1경로 동작이 있어야 한다"
   }
+  assert {
+    condition = (
+      one(one(aws_cloudfront_distribution.main[0].restrictions).geo_restriction).restriction_type == "whitelist" &&
+      one(one(aws_cloudfront_distribution.main[0].restrictions).geo_restriction).locations == toset(["KR"])
+    )
+    error_message = "기본값은 한국만 허용해야 한다"
+  }
+}
+
+run "no_geo_restriction" {
+  command = plan
+  variables {
+    active            = true
+    domain_name       = "crates.example"
+    allowed_countries = []
+  }
+
+  assert {
+    condition     = one(one(aws_cloudfront_distribution.main[0].restrictions).geo_restriction).restriction_type == "none"
+    error_message = "허용 국가를 비우면 제한하지 않아야 한다"
+  }
 }
 
 run "domain_inactive" {
