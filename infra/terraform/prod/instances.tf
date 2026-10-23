@@ -153,8 +153,9 @@ resource "aws_iam_instance_profile" "tailscale_relay" {
 resource "aws_instance" "tailscale_relay" {
   count = var.tailscale_relay_enabled ? 1 : 0
 
-  ami                    = data.aws_ssm_parameter.al2023_arm64.value
-  instance_type          = "t4g.nano"
+  ami = data.aws_ssm_parameter.al2023_arm64.value
+  # nano(512MB)는 첫 기동 때 dnf가 저장소 메타데이터를 읽다 메모리 부족으로 죽는다(2026-10-23 첫 적용에서 확인).
+  instance_type          = "t4g.micro"
   subnet_id              = aws_subnet.app[0].id
   vpc_security_group_ids = [aws_security_group.tailscale_relay[0].id]
   iam_instance_profile   = aws_iam_instance_profile.tailscale_relay[0].name
