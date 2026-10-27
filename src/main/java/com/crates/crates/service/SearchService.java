@@ -21,7 +21,7 @@ public class SearchService {
     private final EmbeddingClient embeddingClient;
     private final RecommendationService recommendationService;
     private final BoardService boardService;
-    private final SearchLikeTokenService searchLikeTokenService;
+    private final BoardLikeTokenService boardLikeTokenService;
 
     /** 보드 한 장에 담을 콘텐츠 종류별 개수(책 4 · 음악 2 · 영화 2, {@code board-mix}, 또는 한 종류 8). */
     private final BoardContentMix boardContentMix;
@@ -78,7 +78,7 @@ public class SearchService {
 
         BoardWithContentsDto board = boardService.findSavedSearchBoard(title, contents, userId)
                 .orElseGet(() -> BoardWithContentsDto.unsaved(title, contents));
-        String likeToken = searchLikeTokenService.issue(title, contents.stream().map(ContentResponseDto::id).toList());
+        String likeToken = boardLikeTokenService.issue(BoardLikeTokenService.Purpose.SEARCH, title, contents.stream().map(ContentResponseDto::id).toList());
 
         return new SearchBoardDto(board.boardId(), board.title(), board.likeCount(), board.liked(),
                 board.contents(), likeToken);
@@ -92,7 +92,7 @@ public class SearchService {
      */
     public BoardLikeResponse likeSearchBoard(String likeToken, Long userId)
     {
-        SearchLikeTokenService.Verified verified = searchLikeTokenService.verify(likeToken);
-        return boardService.likeSearchBoard(verified.keyword(), verified.contentIds(), userId);
+        BoardLikeTokenService.Verified verified = boardLikeTokenService.verify(BoardLikeTokenService.Purpose.SEARCH, likeToken);
+        return boardService.likeSearchBoard(verified.title(), verified.contentIds(), userId);
     }
 }

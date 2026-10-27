@@ -11,7 +11,7 @@ import java.util.List;
  *
  * @param boardId   같은 제목·구성의 검색 보드가 이미 저장돼 있으면 그 id, 아니면 null
  * @param title     검색어(NFC 변환과 앞뒤 공백 제거만 한 값)
- * @param likeToken 이 검색어로 이 콘텐츠를 보여 줬다는 서버 서명(SearchLikeTokenService)
+ * @param likeToken 이 검색어로 이 콘텐츠를 보여 줬다는 서버 서명(BoardLikeTokenService)
  */
 public record SearchBoardDto(
         Long boardId,

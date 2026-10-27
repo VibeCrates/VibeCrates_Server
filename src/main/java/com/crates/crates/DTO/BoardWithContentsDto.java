@@ -21,11 +21,8 @@ public record BoardWithContentsDto(
 ) {
 
     /**
-     * 아직 DB에 저장되지 않은 홈 추천 보드의 응답.
-     *
-     * <p>boardId가 null이라는 것이 프론트에게 "좋아요를 누르면 그때 저장된다"는 신호다.
-     * 이때는 {@code POST /api/boards/{boardId}/likes}가 아니라
-     * {@code POST /api/boards/likes}로 title과 contentIds를 함께 보내야 한다.</p>
+     * 아직 DB에 저장되지 않은 홈 추천·검색 보드. 응답에는 좋아요 토큰을 붙여 내보낸다
+     * ({@link RecommendedBoardDto}, {@link SearchBoardDto}). 좋아요는 boardId가 아니라 그 토큰으로 보낸다.
      */
     public static BoardWithContentsDto unsaved(String title, List<ContentResponseDto> contents)
     {

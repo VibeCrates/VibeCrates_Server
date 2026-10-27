@@ -2,10 +2,11 @@ package com.crates.crates.controller;
 
 
 import com.crates.crates.DTO.ApiResponse;
-import com.crates.crates.DTO.BoardLikeRequest;
 import com.crates.crates.DTO.BoardSaveRequest;
 import com.crates.crates.DTO.BoardLikeResponse;
 import com.crates.crates.DTO.BoardWithContentsDto;
+import com.crates.crates.DTO.RecommendedBoardDto;
+import com.crates.crates.DTO.RecommendedBoardLikeRequest;
 import com.crates.crates.DTO.PageResponse;
 import com.crates.crates.enumData.MyBoardFilter;
 import com.crates.crates.service.BoardService;
@@ -60,10 +61,10 @@ public class BoardController {
     // boardId와 좋아요 상태까지 함께 알려줘야 하트가 빈 채로 다시 그려지지 않기 때문이다.
     // 보드당 8건, 노출 개수 모두 서비스 규칙상 고정이라 파라미터를 받지 않는다.
     @GetMapping("/recommendation/user")
-    public ResponseEntity<ApiResponse<List<BoardWithContentsDto>>> getRecommendation(
+    public ResponseEntity<ApiResponse<List<RecommendedBoardDto>>> getRecommendation(
             @AuthenticationPrincipal CustomUserDetails userDetails)
     {
-        List<BoardWithContentsDto> result = recommendationService.recommendBoards(userDetails.getUserId());
+        List<RecommendedBoardDto> result = recommendationService.recommendBoards(userDetails.getUserId());
 
         return ResponseEntity.status(HttpStatus.OK)
                 .body(new ApiResponse<>(true, result, "추천 보드 조회 성공"));
@@ -166,15 +167,15 @@ public class BoardController {
         return ResponseEntity.ok(new ApiResponse<>(true, result, "좋아요 취소 성공"));
     }
 
-    //- 홈 추천 보드(오늘의 추천 보드)에 좋아요. boardId가 있어도 이 경로로 제목·콘텐츠를 보낸다.
-    //  같은 구성의 보드가 있으면 좋아요만, 없으면 저장한 뒤 좋아요를 남기고 boardId를 돌려준다.
-    //  검색 보드는 POST /api/search/board/likes로 토큰을 보낸다.
+    //- 홈 추천 보드(오늘의 추천 보드)에 좋아요. boardId가 있어도 이 경로로 추천 응답의 likeToken을 보낸다.
+    //  서버가 토큰 안의 제목·콘텐츠로 같은 구성의 보드가 있으면 좋아요만, 없으면 저장한 뒤 좋아요를 남기고 boardId를 돌려준다.
+    //  검색 보드는 POST /api/search/board/likes로 검색 응답의 토큰을 보낸다.
     @PostMapping("/likes")
-    public ResponseEntity<ApiResponse<BoardLikeResponse>> likeNewBoard(
+    public ResponseEntity<ApiResponse<BoardLikeResponse>> likeRecommendedBoard(
             @AuthenticationPrincipal CustomUserDetails userDetails,
-            @Valid @RequestBody BoardLikeRequest request)
+            @Valid @RequestBody RecommendedBoardLikeRequest request)
     {
-        BoardLikeResponse result = boardService.likeNewBoard(request, userDetails.getUserId());
+        BoardLikeResponse result = recommendationService.likeRecommendedBoard(request.likeToken(), userDetails.getUserId());
         return ResponseEntity.ok(new ApiResponse<>(true, result, "보드 저장 및 좋아요 성공"));
     }
 }
