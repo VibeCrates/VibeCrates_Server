@@ -2,14 +2,16 @@ package com.crates.crates.repository;
 
 import com.crates.crates.entity.board.Board;
 import com.crates.crates.enumData.Rating;
-import com.crates.crates.enumData.Visibility;
 import org.springframework.data.domain.Pageable;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -18,23 +20,34 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
     /**
      * 인기 보드 후보를 좋아요 많은 순으로 가져온다.
      *
-     * <p>PRIVATE 보드는 소유자만 보는 것이므로 제외한다. 정렬 마지막에 id를 두는 이유는,
+     * <p>순서는 좋아요 수 → 타입(USER_CUSTOM &gt; SEARCH_RECOMMEND &gt; AI_RECOMMEND) → id다.
+     * 좋아요가 같으면 사람이 관여한 보드가 앞선다(docs/board-schema.md 11-7). 정렬 마지막에 id를 두는 이유는,
      * like_count가 초기에 0~2에 몰려 동률이 대량으로 생기기 때문이다. id가 없으면 SQL이
      * 동률 간 순서를 보장하지 않아 LIMIT 경계에서 어떤 보드가 잘리는지가 실행마다 달라지고,
-     * 그 결과 아래 signature 중복 제거 결과까지 흔들린다.
+     * 그 결과 signature 중복 제거 결과까지 흔들린다.
      * (좋아요는 UPDATE라 PostgreSQL MVCC에서 행의 물리 위치가 바뀌므로 실제로 자주 흔들린다.)
      *
-     * <p>idx_board_popular가 (like_count DESC, id)로 잡혀 있어 정렬 연산 없이 인덱스만 읽는다.</p>
+     * <p>PRIVATE 보드와 주인이 지운 보드는 남에게 보여주는 진열대에 오르지 않는다.</p>
+     *
+     * <p><b>네이티브인 이유:</b> idx_board_popular(V3)가 (like_count DESC, 타입 순위 CASE 식, id)라
+     * ORDER BY가 같은 CASE 식을 글자 그대로 써야 정렬 연산 없이 인덱스를 앞에서부터 읽는다.
+     * 공개 여부도 상수로 박는다 — 부분 인덱스 술어(visibility = 'PUBLIC')를 바인드 파라미터로 보내면
+     * 범용 실행 계획이 그 인덱스를 쓰지 못한다(V3 공통 근거).</p>
      */
-    @Query("SELECT b FROM Board b " +
-           "WHERE b.visibility = :visibility AND b.deletedAt IS NULL " +
-           "ORDER BY b.likeCount DESC, b.id ASC")
-    List<Board> findPopularBoards(@Param("visibility") Visibility visibility, Pageable pageable);
+    @Query(value = """
+            SELECT b.* FROM board b
+             WHERE b.visibility = 'PUBLIC' AND b.deleted_at IS NULL
+             ORDER BY b.like_count DESC,
+                      (CASE b.board_type WHEN 'USER_CUSTOM' THEN 0 WHEN 'SEARCH_RECOMMEND' THEN 1 ELSE 2 END),
+                      b.id
+             LIMIT :limit
+            """, nativeQuery = true)
+    List<Board> findPopularBoards(@Param("limit") int limit);
 
     /**
      * 콘텐츠 구성이 같은 AI_RECOMMEND 보드를 찾는다.
      *
-     * <p>AI_RECOMMEND(검색 보드 / 사용자 추천 보드)는 소유자가 없는 전역 공용 보드다.
+     * <p>AI_RECOMMEND(홈 추천 보드)는 소유자가 없는 전역 공용 보드다.
      * 같은 구성이면 같은 보드로 취급해야 좋아요가 여러 행으로 갈라지지 않는다.
      * uk_board_ai_signature가 DB에서도 같은 규칙을 강제한다.</p>
      *
@@ -51,6 +64,56 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
              WHERE b.board_type = 'AI_RECOMMEND' AND b.content_signature = :signature AND b.deleted_at IS NULL
             """, nativeQuery = true)
     Optional<Board> findActiveAiBoardBySignature(@Param("signature") String signature);
+
+    /**
+     * 제목과 구성이 모두 같은 SEARCH_RECOMMEND 보드를 찾는다.
+     *
+     * <p>검색 보드는 제목이 검색어다. 같은 검색어라도 콘텐츠가 추가되면 결과가 바뀌므로, 제목만으로는
+     * 같은 보드라고 할 수 없다. uk_board_search_title_signature(V3)가 같은 규칙을 강제한다.</p>
+     *
+     * <p>title은 {@link Board#normalizeTitle}을 거친 값이어야 저장된 값과 비교가 성립한다.
+     * board_type을 상수로 박는 이유는 {@link #findActiveAiBoardBySignature}와 같다.</p>
+     */
+    @Query(value = """
+            SELECT b.* FROM board b
+             WHERE b.board_type = 'SEARCH_RECOMMEND' AND b.title = :title AND b.content_signature = :signature
+            """, nativeQuery = true)
+    Optional<Board> findSearchBoard(@Param("title") String title, @Param("signature") String signature);
+
+    /**
+     * AI_RECOMMEND 보드 행을 만든다. 같은 구성이 이미 있으면 아무것도 하지 않는다.
+     *
+     * <p>"없으면 저장"을 조회 뒤 save()로 하면, 두 사람이 동시에 처음 좋아요할 때 둘 다 "없음"을 보고
+     * 저장하다가 uk_board_ai_signature에 걸린다. 예외를 잡아 다시 조회하는 방식은 PostgreSQL이 오류 난
+     * 트랜잭션을 이어 가지 못해 같은 트랜잭션 안에서 동작하지 않는다. ON CONFLICT DO NOTHING은 오류 없이
+     * 빈 결과를 돌려주므로, 비어 있으면 먼저 만든 보드를 조회해 좋아요를 붙이면 된다.</p>
+     *
+     * <p>콘텐츠(board_item)는 여기서 넣지 않는다. 행이 생기면 엔티티로 읽어 {@link Board#replaceContents}로 채운다.
+     * 충돌 대상은 uk_board_ai_signature의 열과 술어로 추론한다.</p>
+     *
+     * @return 새로 만든 보드 id. 이미 있었으면 비어 있다
+     */
+    @Query(value = """
+            INSERT INTO board (board_type, visibility, title, content_signature, like_count, created_at)
+            VALUES ('AI_RECOMMEND', 'PUBLIC', :title, :signature, 1, LOCALTIMESTAMP)
+            ON CONFLICT (content_signature) WHERE board_type = 'AI_RECOMMEND' AND deleted_at IS NULL DO NOTHING
+            RETURNING id
+            """, nativeQuery = true)
+    Optional<Long> insertAiBoard(@Param("title") String title, @Param("signature") String signature);
+
+    /**
+     * SEARCH_RECOMMEND 보드 행을 만든다. 제목과 구성이 같은 보드가 이미 있으면 아무것도 하지 않는다.
+     * 이유와 쓰임은 {@link #insertAiBoard}와 같다. 충돌 대상은 uk_board_search_title_signature다.
+     *
+     * @return 새로 만든 보드 id. 이미 있었으면 비어 있다
+     */
+    @Query(value = """
+            INSERT INTO board (board_type, visibility, title, content_signature, like_count, created_at)
+            VALUES ('SEARCH_RECOMMEND', 'PUBLIC', :title, :signature, 1, LOCALTIMESTAMP)
+            ON CONFLICT (title, content_signature) WHERE board_type = 'SEARCH_RECOMMEND' DO NOTHING
+            RETURNING id
+            """, nativeQuery = true)
+    Optional<Long> insertSearchBoard(@Param("title") String title, @Param("signature") String signature);
 
     /**
      * "내 보드"(보관함 전체 탭) — 내가 만든 보드와 내가 좋아요한 보드를 합쳐 최근에 담은 순으로.
@@ -111,9 +174,9 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
      * 2페이지부터 틀어진다. 한 갈래가 앞쪽을 독차지한 경우 뒤 페이지에 나올 행이 그 갈래의
      * 상위 size 안에 없을 수 있기 때문이다. 합친 뒤 바깥에서 다시 자른다.</p>
      *
-     * <p>삭제된 보드는 조인이 아니라 {@code NOT EXISTS}로 배제한다. 살아있는 보드가 사실상
-     * 전부라 조인하면 비용이 O(전체 보드)가 되지만, 삭제된 보드는 극소수라 배제하면
-     * O(삭제된 보드)가 된다. idx_board_deleted(V3)가 받친다 — findLikedBoardsWithTime과 같은 이유다.</p>
+     * <p>좋아요 갈래는 삭제된 보드를 배제하지 않는다. deleted_at이 있는 보드는 주인이 지운 USER_CUSTOM뿐이고,
+     * 그 보드는 좋아요한 사람에게 계속 보여야 한다(docs/board-schema.md 11-6). 주인은 지울 때 자기 좋아요가
+     * 함께 지워지고, 만든 것 갈래는 소유자(user_id)가 비워져 빠진다.</p>
      *
      * <p>동률 기준은 {@code b.id DESC}로 원본을 그대로 둔다. 좋아요 갈래의 인덱스 순서는
      * (created_at DESC, f.id DESC)라 b.id와 어긋나지만, PostgreSQL의 Incremental Sort가
@@ -134,8 +197,6 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
               JOIN ( (SELECT f.board_id AS bid, f.created_at AS sort_at
                         FROM board_feedback f
                        WHERE f.user_id = :userId AND f.rating = :rating
-                         AND NOT EXISTS (SELECT 1 FROM board d
-                                          WHERE d.id = f.board_id AND d.deleted_at IS NOT NULL)
                        ORDER BY f.created_at DESC, f.board_id DESC
                        LIMIT :cap)
                      UNION ALL
@@ -176,27 +237,74 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
     List<Board> findCreatedByMe(@Param("userId") Long userId, Pageable pageable);
 
     /**
-     * 이 사용자가 이미 같은 구성의 USER_CUSTOM 보드를 갖고 있는지.
+     * 이 사용자가 이미 제목과 구성이 같은 USER_CUSTOM 보드를 갖고 있는지.
      *
-     * <p>uk_board_user_signature와 같은 규칙이다. DB 제약에 부딪혀 500이 나기 전에
-     * 미리 확인해 사용자에게 설명 가능한 메시지를 돌려주기 위한 조회다.</p>
+     * <p>uk_board_user_title_signature(V3)와 같은 규칙이다. 구성만 같고 제목이 다른 보드는 허용한다.
+     * DB 제약에 부딪혀 500이 나기 전에 미리 확인해 사용자에게 설명 가능한 메시지를 돌려주기 위한 조회다.
+     * title은 {@link Board#normalizeTitle}을 거친 값이어야 한다.</p>
      *
      * <p>board_type을 상수로 박으려고 네이티브로 쓴다 — {@link #findActiveAiBoardBySignature}와 같은 이유다.
      * JPQL에 {@code BoardType.USER_CUSTOM}을 박아도 Hibernate가 파라미터로 바꿔, 범용 실행 계획에서
-     * uk_board_user_signature(USER_CUSTOM 행만 담는 부분 인덱스)를 쓰지 못한다.</p>
+     * 부분 인덱스를 쓰지 못한다.</p>
      */
     @Query(value = """
             SELECT b.* FROM board b
              WHERE b.board_type = 'USER_CUSTOM' AND b.user_id = :userId
-               AND b.content_signature = :signature AND b.deleted_at IS NULL
+               AND b.content_signature = :signature AND b.title = :title AND b.deleted_at IS NULL
             """, nativeQuery = true)
-    Optional<Board> findActiveUserBoardBySignature(@Param("userId") Long userId,
-                                                   @Param("signature") String signature);
+    Optional<Board> findActiveUserBoard(@Param("userId") Long userId,
+                                        @Param("signature") String signature,
+                                        @Param("title") String title);
+
+    /**
+     * 보드 행을 잠그고 읽는다. 지우기 전에 좋아요 수를 확인하는 동안 다른 좋아요가 끼어들지 못하게 한다.
+     *
+     * <p>좋아요는 {@link #incrementLikeCount}로 같은 행을 갱신하므로, 잠근 동안 들어온 좋아요는 이 트랜잭션이
+     * 끝날 때까지 기다린다. 그 사이 보드가 지워졌다면 그 좋아요는 갱신할 행이 없어 실패한다.</p>
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT b FROM Board b WHERE b.id = :boardId")
+    Optional<Board> findByIdForUpdate(@Param("boardId") Long boardId);
+
+    /**
+     * 주인이 지운 보드. 소유자를 비우고 지운 시각을 남긴다.
+     *
+     * <p>행을 바로 지우지 않는 이유는 다른 사람의 좋아요 때문이다. 좋아요한 사람에게는 보드가 계속 보이고
+     * 취향 벡터에도 남는다. 소유자를 비우면 주인의 보관함과 "같은 제목·구성" 검사에서 자연히 빠진다.
+     * ck_board_owner(V3)가 "삭제된 USER_CUSTOM은 소유자가 없다"를 강제한다.</p>
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE Board b SET b.user = NULL, b.deletedAt = :deletedAt WHERE b.id = :boardId")
+    int softDelete(@Param("boardId") Long boardId, @Param("deletedAt") LocalDateTime deletedAt);
+
+    /**
+     * 좋아요가 하나도 남지 않아 더는 보관할 이유가 없는 보드를 지운다.
+     *
+     * <ul>
+     *   <li>AI_RECOMMEND, SEARCH_RECOMMEND — 좋아요가 0이 되는 순간</li>
+     *   <li>USER_CUSTOM — 주인이 지운(소프트 삭제) 뒤 마지막 좋아요가 취소되는 순간. 주인이 지우지 않은 보드는
+     *       좋아요가 0이어도 주인의 것이라 남긴다.</li>
+     * </ul>
+     *
+     * <p>조건을 문장 안에 둬서, 호출 직전에 좋아요가 들어와 1이 됐다면 지우지 않는다. 호출하는 쪽은 이 행을
+     * 먼저 잠가야 한다(좋아요 수 갱신 또는 {@link #findByIdForUpdate}). 콘텐츠(board_item)를 먼저 지워야 한다 —
+     * 외래 키에 ON DELETE CASCADE를 걸지 않았다(V3 머리말).</p>
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            DELETE FROM board b
+             WHERE b.id = :boardId AND b.like_count = 0
+               AND (b.board_type IN ('AI_RECOMMEND', 'SEARCH_RECOMMEND') OR b.deleted_at IS NOT NULL)
+            """, nativeQuery = true)
+    int deleteIfUnliked(@Param("boardId") Long boardId);
 
     // 엔티티를 읽어 +1 하고 저장하면 동시 요청에서 갱신 손실이 난다.
     // 증감을 DB에 맡겨 원자적으로 처리하고, Board에 setter를 열지 않는다.
+    //
+    // 지워진 보드(행이 없거나 주인이 지운 보드)에는 좋아요를 붙이지 않는다. 0을 돌려주면 호출하는 쪽이 거절한다.
+    // 이 UPDATE가 행을 잠그므로, 좋아요 기록을 남기기 전에 먼저 부르면 그 사이 보드가 지워지지 않는다.
     @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("UPDATE Board b SET b.likeCount = b.likeCount + 1 WHERE b.id = :boardId")
+    @Query("UPDATE Board b SET b.likeCount = b.likeCount + 1 WHERE b.id = :boardId AND b.deletedAt IS NULL")
     int incrementLikeCount(@Param("boardId") Long boardId);
 
     // GREATEST로 하한을 두어 어떤 경우에도 음수가 되지 않게 한다.

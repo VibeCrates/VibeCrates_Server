@@ -122,7 +122,7 @@ public class BoardController {
 
     // 보드의 제목과 콘텐츠를 통째로 갱신한다. 배열 순서가 곧 배치 순서(slot 1~8)라,
     // 제목 변경·콘텐츠 교체·순서 변경이 모두 같은 요청으로 처리된다.
-    // 내 보드가 아니면 원본을 건드리지 않고 복제본을 만들어 돌려주므로, 응답의 boardId를 반영해야 한다.
+    // 내 보드가 아니면 원본은 두고 내 보드로 새로 저장해 돌려주므로, 응답의 boardId를 반영해야 한다.
     @PutMapping("/{boardId}")
     public ResponseEntity<ApiResponse<BoardWithContentsDto>> updateBoard(
             @AuthenticationPrincipal CustomUserDetails userDetails,
@@ -145,7 +145,18 @@ public class BoardController {
         return ResponseEntity.ok(new ApiResponse<>(true, result, "좋아요 성공"));
     }
 
-    //- 좋아요 취소
+    // 내 보드 삭제. 보관함에서 주인만 할 수 있다.
+    // 다른 사람의 좋아요가 남아 있으면 그 사람들에게는 계속 보이고, 마지막 좋아요가 취소될 때 완전히 지워진다.
+    @DeleteMapping("/{boardId}")
+    public ResponseEntity<ApiResponse<Void>> deleteBoard(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long boardId)
+    {
+        boardService.deleteUserBoard(boardId, userDetails.getUserId());
+        return ResponseEntity.ok(new ApiResponse<>(true, null, "보드 삭제 성공"));
+    }
+
+    //- 좋아요 취소. 좋아요가 0이 되어 보드가 지워지면 응답의 boardId가 null이다.
     @DeleteMapping("/{boardId}/likes")
     public ResponseEntity<ApiResponse<BoardLikeResponse>> unlike(
             @AuthenticationPrincipal CustomUserDetails userDetails,
@@ -155,8 +166,9 @@ public class BoardController {
         return ResponseEntity.ok(new ApiResponse<>(true, result, "좋아요 취소 성공"));
     }
 
-    //- 아직 DB에 없는 보드(오늘의 추천 보드 / 검색어 유사 보드)에 좋아요.
-    //  보드를 저장한 뒤 좋아요를 남기고, 새로 만들어진 boardId를 돌려준다.
+    //- 홈 추천 보드(오늘의 추천 보드)에 좋아요. boardId가 있어도 이 경로로 제목·콘텐츠를 보낸다.
+    //  같은 구성의 보드가 있으면 좋아요만, 없으면 저장한 뒤 좋아요를 남기고 boardId를 돌려준다.
+    //  검색 보드는 POST /api/search/board/likes로 토큰을 보낸다.
     @PostMapping("/likes")
     public ResponseEntity<ApiResponse<BoardLikeResponse>> likeNewBoard(
             @AuthenticationPrincipal CustomUserDetails userDetails,
