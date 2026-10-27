@@ -168,7 +168,7 @@ ai:
           music: classpath:data/music_vectors.csv
   server:
     # AI 서버(Tailscale IP). 배포 위치가 정해지지 않아 환경 변수로 바꿀 수 있게 둔다. 로컬 단독 테스트 시 http://localhost:8000
-    base-url: ${AI_SERVER_BASE_URL:http://100.77.133.40:8000}
+    base-url: ${AI_SERVER_BASE_URL:http://100.115.172.111:8000}
     # 묶음 임베딩 계약: {"query": ["...", ...]} -> {"vectors": [[...], ...], "model_version": "..."} (순서 그대로)
     embedding-path: /api/v1/embeddings
     # 연결은 짧게 둔다. AI 서버가 꺼지면(2026-10-10 Tailscale 끊김) 빨리 실패해야 다른 요청이 밀리지 않는다.
