@@ -13,6 +13,7 @@ import io.qdrant.client.grpc.Points;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -198,15 +199,11 @@ public class QdrantPointOperations {
         await(qdrantClient.upsertAsync(collectionName, pointStructs));
     }
 
-    public List<ScoredPointResult> search(String collectionName, float[] queryVector, int topK) {
-        return search(collectionName, queryVector, topK, false);
-    }
-
     /**
-     * withVectors가 true면 결과에 point의 벡터도 담는다.
+     * 기준 벡터와 가까운 point를 topK개 찾는다. withVectors가 true면 결과에 point의 벡터도 담는다.
      *
-     * <p>보드 제목을 정하려면 고른 콘텐츠의 평균 벡터가 필요하다. 검색과 따로 retrieve하면 왕복이
-     * 한 번 늘어나므로 검색 응답에 함께 싣는다. topK가 수십 건이라 gRPC 수신 한도와는 거리가 멀다.</p>
+     * <p>홈 추천 보드의 제목 후보가 벡터를 함께 받는다. 후보끼리 얼마나 비슷한지 재야 하는데, 따로 retrieve하면
+     * 왕복이 한 번 늘어난다. 768차원이면 point당 약 3KB라 topK 200이 약 0.6MB로 gRPC 수신 한도(4MB)와 거리가 멀다.</p>
      */
     public List<ScoredPointResult> search(String collectionName, float[] queryVector, int topK, boolean withVectors) {
         Points.SearchPoints request = Points.SearchPoints.newBuilder()
@@ -224,58 +221,48 @@ public class QdrantPointOperations {
     }
 
     /**
-     * 기준 벡터 여러 개를 한 번의 요청으로 검색한다. 결과는 입력 순서대로, 기준 벡터마다 따로 돌아온다.
-     *
-     * <p>추천 보드 4개의 제목을 정할 때 쓴다. 보드마다 자기 평균 벡터로 검색되므로 따로 4번 보낸 것과 결과가 같고,
-     * Qdrant 왕복만 4번에서 1번으로 준다.</p>
-     */
-    public List<List<ScoredPointResult>> searchBatch(String collectionName, List<float[]> queryVectors, int topK) {
-        if (queryVectors.isEmpty()) {
-            return List.of();
-        }
-
-        List<Points.SearchPoints> requests = queryVectors.stream()
-                .map(vector -> Points.SearchPoints.newBuilder()
-                        .setCollectionName(collectionName)
-                        .addAllVector(toFloatList(vector))
-                        .setLimit(topK)
-                        .setWithPayload(WithPayloadSelectorFactory.enable(true))
-                        .build())
-                .toList();
-
-        return await(qdrantClient.searchBatchAsync(collectionName, requests, null))
-                .stream()
-                .map(batch -> batch.getResultList().stream().map(this::toResult).toList())
-                .toList();
-    }
-
-    /**
      * 같은 기준 벡터로, payload 필드 값마다 정해진 개수를 따로 검색한다. 한 번의 요청(묶음 검색)으로 보낸다.
      *
-     * <p>결과는 값마다 따로 돌아온다(입력 Map의 순서). 벡터도 함께 받는다 — 보드 제목을 정할 때 평균을 낸다.</p>
+     * <p>결과는 값마다 따로 돌아온다(입력 Map의 순서). 벡터는 받지 않는다 — 쓰는 곳이 콘텐츠 id만 본다.</p>
      *
      * @param limitByValue 필드 값 → 그 값에서 뽑을 개수 (예: BOOK 4, MUSIC 2, MOVIE 2)
      */
     public Map<String, List<ScoredPointResult>> searchEachValue(String collectionName, float[] queryVector,
                                                                 String field, Map<String, Integer> limitByValue) {
+        return searchEachValue(collectionName, List.of(queryVector), field, limitByValue).getFirst();
+    }
+
+    /**
+     * 기준 벡터 여러 개 × payload 필드 값마다 따로 검색한다. 전부 한 번의 요청(묶음 검색)으로 보낸다.
+     *
+     * <p>홈 추천 보드가 쓴다. 보드마다 기준 벡터가 달라 따로 보내면 왕복이 보드 수만큼 늘어난다.
+     * 결과는 기준 벡터 순서대로, 그 안에서는 값마다 따로(입력 Map의 순서) 돌아온다.</p>
+     */
+    public List<Map<String, List<ScoredPointResult>>> searchEachValue(String collectionName, List<float[]> queryVectors,
+                                                                      String field, Map<String, Integer> limitByValue) {
         List<String> values = List.copyOf(limitByValue.keySet());
-        List<Points.SearchPoints> requests = values.stream()
-                .map(value -> Points.SearchPoints.newBuilder()
-                        .setCollectionName(collectionName)
-                        .addAllVector(toFloatList(queryVector))
-                        .setFilter(Points.Filter.newBuilder().addMust(ConditionFactory.matchKeyword(field, value)).build())
-                        .setLimit(limitByValue.get(value))
-                        .setWithPayload(WithPayloadSelectorFactory.enable(true))
-                        .setWithVectors(WithVectorsSelectorFactory.enable(true))
-                        .build())
+        List<Points.SearchPoints> requests = queryVectors.stream()
+                .flatMap(vector -> values.stream()
+                        .map(value -> Points.SearchPoints.newBuilder()
+                                .setCollectionName(collectionName)
+                                .addAllVector(toFloatList(vector))
+                                .setFilter(Points.Filter.newBuilder().addMust(ConditionFactory.matchKeyword(field, value)).build())
+                                .setLimit(limitByValue.get(value))
+                                .setWithPayload(WithPayloadSelectorFactory.enable(true))
+                                .build()))
                 .toList();
 
+        // 요청을 기준 벡터마다 values.size()개씩 이어 붙였으므로, 결과도 같은 크기로 끊으면 기준 벡터 하나 분량이다.
         List<Points.BatchResult> results = await(qdrantClient.searchBatchAsync(collectionName, requests, null));
-        Map<String, List<ScoredPointResult>> byValue = new LinkedHashMap<>();
-        for (int i = 0; i < values.size(); i++) {
-            byValue.put(values.get(i), results.get(i).getResultList().stream().map(this::toResult).toList());
+        List<Map<String, List<ScoredPointResult>>> perVector = new ArrayList<>(queryVectors.size());
+        for (int from = 0; from < results.size(); from += values.size()) {
+            Map<String, List<ScoredPointResult>> byValue = new LinkedHashMap<>();
+            for (int i = 0; i < values.size(); i++) {
+                byValue.put(values.get(i), results.get(from + i).getResultList().stream().map(this::toResult).toList());
+            }
+            perVector.add(byValue);
         }
-        return byValue;
+        return perVector;
     }
 
     private Points.PointStruct toPointStruct(PointRecord point) {
@@ -352,7 +339,7 @@ public class QdrantPointOperations {
     }
 
     private List<Float> toFloatList(float[] vector) {
-        List<Float> result = new java.util.ArrayList<>(vector.length);
+        List<Float> result = new ArrayList<>(vector.length);
         for (float value : vector) {
             result.add(value);
         }

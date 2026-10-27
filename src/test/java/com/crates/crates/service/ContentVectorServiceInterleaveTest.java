@@ -55,24 +55,39 @@ class ContentVectorServiceInterleaveTest {
         assertEquals(List.of(101L, 201L, 102L, 103L), ids(ContentVectorService.interleave(List.of(books, music))));
     }
 
-    /** 홈 추천: 종류마다 4장 분량을 가까운 순으로 받아 장마다 4·2·2개씩 앞에서부터 나눈다. */
+    /** 홈 추천: 보드마다 자기 결과에서 앞 보드에 담긴 것을 빼고 종류별 개수만큼 앞에서부터 고른다. */
     @Test
-    void splitsEachTypeIntoBoardsInOrder()
+    void skipsContentsAlreadyTakenByEarlierBoards()
     {
-        Map<String, List<ScoredPointResult>> byType = new LinkedHashMap<>();
-        byType.put("BOOK", List.of(point(101, .9f), point(102, .8f), point(103, .7f), point(104, .6f),
-                point(105, .5f), point(106, .4f), point(107, .3f), point(108, .2f)));
-        byType.put("MUSIC", List.of(point(201, .9f), point(202, .8f), point(203, .7f), point(204, .6f)));
         Map<String, Integer> perBoard = new LinkedHashMap<>();
-        perBoard.put("BOOK", 4);
-        perBoard.put("MUSIC", 2);
+        perBoard.put("BOOK", 2);
+        perBoard.put("MUSIC", 1);
 
-        List<List<List<ScoredPointResult>>> boards = ContentVectorService.splitIntoBoards(byType, perBoard, 2);
+        Map<String, List<ScoredPointResult>> first = new LinkedHashMap<>();
+        first.put("BOOK", List.of(point(101, .9f), point(102, .8f), point(103, .7f), point(104, .6f)));
+        first.put("MUSIC", List.of(point(201, .9f), point(202, .8f)));
+        // 2번 보드의 결과가 1번 보드와 많이 겹친다
+        Map<String, List<ScoredPointResult>> second = new LinkedHashMap<>();
+        second.put("BOOK", List.of(point(102, .9f), point(105, .8f), point(101, .7f), point(106, .6f)));
+        second.put("MUSIC", List.of(point(201, .9f), point(203, .8f)));
 
-        // 1번 보드에 각 종류에서 가장 가까운 것들이 들어간다
-        assertEquals(List.of(101L, 102L, 103L, 104L), ids(boards.get(0).get(0)));
-        assertEquals(List.of(201L, 202L), ids(boards.get(0).get(1)));
-        assertEquals(List.of(105L, 106L, 107L, 108L), ids(boards.get(1).get(0)));
-        assertEquals(List.of(203L, 204L), ids(boards.get(1).get(1)));
+        List<List<ScoredPointResult>> boards = ContentVectorService.pickDistinctBoards(List.of(first, second), perBoard);
+
+        assertEquals(List.of(101L, 201L, 102L), ids(boards.get(0)));
+        // 101·102·201은 1번 보드가 가져갔으므로 건너뛰고 다음 것을 담는다
+        assertEquals(List.of(105L, 203L, 106L), ids(boards.get(1)));
+    }
+
+    /** 겹친 것을 빼고 나니 모자라면 그 보드는 짧게 돌아간다(호출하는 쪽이 뺀다). */
+    @Test
+    void returnsShortBoardWhenNotEnoughLeft()
+    {
+        Map<String, Integer> perBoard = Map.of("BOOK", 2);
+        Map<String, List<ScoredPointResult>> first = Map.of("BOOK", List.of(point(101, .9f), point(102, .8f)));
+        Map<String, List<ScoredPointResult>> second = Map.of("BOOK", List.of(point(101, .9f), point(103, .8f)));
+
+        List<List<ScoredPointResult>> boards = ContentVectorService.pickDistinctBoards(List.of(first, second), perBoard);
+
+        assertEquals(List.of(103L), ids(boards.get(1)));
     }
 }
