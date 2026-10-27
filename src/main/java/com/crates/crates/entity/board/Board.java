@@ -8,6 +8,7 @@ import com.crates.crates.enumData.Visibility;
 import jakarta.persistence.*;
 import lombok.*;
 
+import java.text.Normalizer;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -37,9 +38,10 @@ public class Board {
     /**
      * 이 보드가 귀속되는 사용자.
      *
-     * <p>USER_CUSTOM일 때만 값이 있다. AI_RECOMMEND는 소유자가 없는 전역 공용 보드라
+     * <p>살아 있는 USER_CUSTOM일 때만 값이 있다. AI_RECOMMEND·SEARCH_RECOMMEND는 소유자가 없는 전역 공용 보드라
      * null이며, 그래서 한 사용자가 그 보드를 고쳐도 다른 사용자에게 영향이 가지 않도록
-     * 수정이 아니라 복제로 처리한다. 이 규칙은 ck_board_owner(V3__BoardSchema)가 DB에서 강제한다.</p>
+     * 원본을 고치지 않고 그 사람의 보드로 새로 저장한다. 주인이 지운 USER_CUSTOM도 null이다(BoardRepository.softDelete).
+     * 이 규칙은 ck_board_owner(V3)가 DB에서 강제한다.</p>
      */
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id")
@@ -111,7 +113,33 @@ public class Board {
     /** 제목 변경. USER_CUSTOM 보드만 사용자가 직접 바꿀 수 있다(BoardService가 판단). */
     public void updateTitle(String title)
     {
-        this.title = title;
+        this.title = normalizeTitle(title);
+    }
+
+    /** 주인이 지운 보드인지. 지우는 것은 BoardRepository.softDelete가 한다. */
+    public boolean isDeleted()
+    {
+        return deletedAt != null;
+    }
+
+    /**
+     * 저장·비교에 쓰는 제목. 유니코드 NFC로 바꾸고 앞뒤 공백만 걷어낸다.
+     *
+     * <p>제목은 사용자의 표현이라 대소문자와 문장 안의 공백은 그대로 둔다("Jazz"와 "jazz"는 다른 제목이다).
+     * NFC는 화면에 똑같이 보이는 한글이 기기(macOS·iOS 입력의 NFD)에 따라 다른 바이트로 들어와
+     * 같은 제목이 두 보드로 갈라지는 것만 막는다. 같은 제목인지는 이 값으로 판단하므로
+     * (uk_board_user_title_signature, uk_board_search_title_signature) 저장하는 모든 경로가 이 메서드를 거쳐야 한다.</p>
+     *
+     * <p>{@code @NotBlank}는 ASCII 공백만 걸러서 전각 공백(U+3000)만 있는 제목이 통과한다. strip 후 비면 여기서 막는다.</p>
+     */
+    public static String normalizeTitle(String title)
+    {
+        String normalized = title == null ? "" : Normalizer.normalize(title, Normalizer.Form.NFC).strip();
+        if (normalized.isEmpty())
+        {
+            throw new BusinessException("보드 제목을 입력해주세요.");
+        }
+        return normalized;
     }
 
     /**
