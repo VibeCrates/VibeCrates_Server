@@ -8,11 +8,9 @@ import http from 'k6/http';
 
 export const BASE = __ENV.BASE_URL || 'http://localhost:8080';
 
-/** 보드 하나에 담기는 콘텐츠 수. 백엔드 Board.ITEMS_PER_BOARD와 같은 값이어야 한다. */
-export const ITEMS_PER_BOARD = 8;
-
 /** content.id 상한. 시딩 결과가 바뀌면 같이 바꿀 것 (기본: 벡터 있는 콘텐츠만, 중복 제거 — BOOK 107,225 + MOVIE 39,237 + MUSIC 36,674). */
 export const MAX_CONTENT_ID = Number(__ENV.MAX_CONTENT_ID || 183136);
+
 
 /** 테스트로 만든 데이터를 나중에 골라내기 위한 접두사. cleanup.sql이 이 값을 쓴다. */
 export const PREFIX = 'loadtest';
@@ -46,27 +44,29 @@ export function login(tag) {
   return res.json('data.accessToken');
 }
 
-/** 서로 다른 콘텐츠 8건. 중복이 섞이면 서버가 400으로 거절한다. */
-export function randomContentIds() {
-  const picked = new Set();
-  while (picked.size < ITEMS_PER_BOARD) {
-    picked.add(1 + Math.floor(Math.random() * MAX_CONTENT_ID));
-  }
-  return [...picked];
+/**
+ * 홈 추천 보드에 좋아요. 프론트처럼 추천 응답의 제목과 콘텐츠 구성을 그대로 보낸다.
+ *
+ * 같은 구성의 AI 보드가 있으면 거기에 좋아요하고, 없으면 저장(INSERT ... ON CONFLICT DO NOTHING)한 뒤 좋아요한다.
+ * 저장된 보드는 좋아요를 취소해 0개가 되면 완전히 지워진다 — 좋아요→취소 짝이면 데이터가 원래대로 돌아온다.
+ */
+export function likeRecommendedBoard(token, title, contentIds) {
+  return http.post(
+    `${BASE}/api/boards/likes`,
+    JSON.stringify({ title, contentIds }),
+    { ...auth(token), tags: { name: 'POST /api/boards/likes' } },
+  );
 }
 
 /**
- * 아직 저장되지 않은 보드에 좋아요. 보드 생성 + 좋아요가 한 번에 일어난다.
- *
- * 이 경로가 findActiveAiBoardBySignature를 부른다 — board_type을 상수로 박은 네이티브 쿼리라
- * 제네릭 플랜에서도 uk_board_ai_signature(부분 유니크 인덱스)를 쓰는지 검증하는 자리다(V3).
- * 호출할 때마다 board 행이 하나 늘어난다.
+ * 검색 보드에 좋아요. 검색 응답의 likeToken(서버가 서명한 검색어·구성)을 보낸다.
+ * 홈 추천 보드와 같이 없으면 저장하고, 취소로 0개가 되면 지워진다.
  */
-export function likeNewBoard(token, title) {
+export function likeSearchBoard(token, likeToken) {
   return http.post(
-    `${BASE}/api/boards/likes`,
-    JSON.stringify({ title, contentIds: randomContentIds() }),
-    { ...auth(token), tags: { name: 'POST /api/boards/likes' } },
+    `${BASE}/api/search/board/likes`,
+    JSON.stringify({ likeToken }),
+    { ...auth(token), tags: { name: 'POST /api/search/board/likes' } },
   );
 }
 
@@ -78,7 +78,10 @@ export function likeBoard(token, boardId) {
   });
 }
 
-/** 좋아요 취소. 쓰기 시나리오가 좋아요와 짝으로 보내 좋아요 이력을 원래대로 유지한다. */
+/**
+ * 좋아요 취소. 쓰기 시나리오가 좋아요와 짝으로 보내 좋아요 이력을 원래대로 유지한다.
+ * 좋아요가 0개가 된 AI·검색 보드는 이때 완전히 지워진다(콘텐츠 → 보드 순).
+ */
 export function unlikeBoard(token, boardId) {
   return http.del(`${BASE}/api/boards/${boardId}/likes`, null, {
     ...auth(token),
@@ -116,7 +119,11 @@ export function myBoardIds(token, size) {
   return res.json('data.content').map((b) => b.boardId).filter((id) => id !== null);
 }
 
-/** 오늘의 추천 보드. resolveGeneratedBoard를 4번 부르므로 signature 조회가 4회 일어난다. */
+/**
+ * 오늘의 추천 보드 4장. 캐시가 없으면 Qdrant를 두 번 부른다 — 취향 근처 제목 후보 200개(벡터 포함),
+ * 보드 4장 × 종류 3개의 콘텐츠 묶음 검색. 그다음 보드마다 같은 구성의 저장된 AI 보드를 찾는다(4회).
+ * 캐시(Redis)가 켜져 있으면 취향 벡터가 바뀔 때까지 Qdrant를 건너뛴다.
+ */
 export function recommendation(token) {
   return http.get(`${BASE}/api/boards/recommendation/user`, {
     ...auth(token),
@@ -148,7 +155,10 @@ export function homeMyBoards(token) {
   return archive(token, 'ALL', 0, 8);
 }
 
-/** 검색 보드. AI 서버 임베딩 → Qdrant 콘텐츠 검색 → 제목 query 매칭. */
+/**
+ * 검색 보드. AI 서버 임베딩(캐시가 켜져 있으면 Redis 먼저) → Qdrant 콘텐츠 검색 → 같은 제목·구성의 저장된 검색 보드 조회
+ * → 좋아요 토큰 서명. 제목은 검색어 그대로라 query 매칭은 없다.
+ */
 export function searchBoard(token, keyword) {
   return http.get(`${BASE}/api/search/board?keyword=${encodeURIComponent(keyword)}`, {
     ...auth(token),

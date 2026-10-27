@@ -6,7 +6,7 @@
 
 import { SharedArray } from 'k6/data';
 
-const TOKENS = new SharedArray('tokens', () => {
+export const TOKENS = new SharedArray('tokens', () => {
   if (!__ENV.TOKENS_FILE) {
     throw new Error('TOKENS_FILE이 없습니다. ./load-test/lib/tokens.sh <파일> 로 먼저 토큰을 받으세요.');
   }

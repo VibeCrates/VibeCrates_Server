@@ -68,6 +68,10 @@ export function nextSearchKeyword() {
     const rank = Math.floor(Math.pow(N + 1, Math.random())) - 1;
     return phrase((rank * STRIDE) % N, (rank * 31 + 3) % SUFFIXES.length);
   }
-  const i = exec.scenario.iterationInTest;
+  return searchKeyword(exec.scenario.iterationInTest);
+}
+
+/** i번째 조합 검색어(unique 방식). setup처럼 반복 번호가 없는 곳에서 검색어를 미리 만들 때 쓴다. */
+export function searchKeyword(i) {
   return phrase((SEED + i * STRIDE) % N, i % SUFFIXES.length);
 }
