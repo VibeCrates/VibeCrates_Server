@@ -125,33 +125,6 @@ services:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
 
-  # Elasticsearch: 전문 텍스트 검색 (Nori 분석기 포함)
-#  elasticsearch:
-#    build: ./elasticsearch      # dockerFile 경로
-#    container_name: elasticsearch
-#    environment:
-#      - node.name=elasticsearch
-#      - discovery.type=single-node
-#      - xpack.security.enabled=false  # 로컬 개발 편의를 위해 보안 해제 (실운영시 true 필수)
-#      - "ES_JAVA_OPTS=-Xms512m -Xmx512m" # 메모리 제한 (안 걸면 RAM을 다 먹어버림), 로컬 메모리 최적화
-#    ports:
-#      - 9200:9200
-#    volumes:
-#      - es_data:/usr/share/elasticsearch/data
-#    restart: unless-stopped
-
-  # Kibana: Elasticsearch 데이터 시각화 도구
-#  kibana:
-#    image: docker.elastic.co/kibana/kibana:8.11.1
-#    container_name: kibana
-#    environment:
-#      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-#    ports:
-#      - 5601:5601
-#    depends_on:
-#      - elasticsearch
-#    restart: unless-stopped
-
   # Redis: 추천 목록 캐싱 및 데이터 수화 (Hydration) 용
   redis:
     image: redis:latest
@@ -231,4 +204,3 @@ volumes:
   postgres_data:
   qdrant_data:
   minio_data:
-#  es_data:
