@@ -12,8 +12,14 @@
 # CPU는 환경변수로 받는다. 코어 수 실험은 파일을 고치지 않고 이렇게 한다:
 #   BACKEND_CPUS=2 docker compose ... up -d backend
 #
-# redis·minio는 상한을 두지 않는다. 측정할 API가 거치지 않는다(redis는 OAuth 임시 토큰,
-# minio는 브라우저가 이미지를 직접 받는다).
+# redis·minio는 상한을 두지 않는다. minio는 브라우저가 이미지를 직접 받아 측정할 API가 거치지 않는다.
+# redis는 홈 추천 결과·검색어 임베딩 캐시가 쓴다. 측정 종류에 따라 캐시를 켜고 끈다(아래 CACHE_ENABLED).
+#
+# 캐시 — API 개별 측정(api-*)은 끄고, 혼합 측정(mixed)은 켠다. run-sweep.sh가 시나리오와 맞는지 확인한다.
+#   개별: 같은 계정이 반복해 부르면 첫 요청 뒤로는 캐시만 재게 되어 추천·검색 계산의 비용이 보이지 않는다.
+#   혼합: 운영에서는 좋아요를 눌러야 홈 추천이 바뀌므로 캐시를 거치는 것이 실제 모습이다.
+#   CACHE_ENABLED=false docker compose ... up -d backend   # 개별 측정
+#   docker compose ... up -d backend                       # 혼합 측정(기본 켬)
 #
 # qdrant·postgres는 이름 있는 볼륨(qdrant_data, postgres_data)에 저장하므로, 이 파일을 적용하거나
 # 상한을 바꿔 컨테이너가 다시 만들어져도 데이터가 남는다. 처음부터 다시 적재하려면 down -v로 볼륨까지 지운다.
@@ -23,6 +29,9 @@ services:
     environment:
       # SQL 출력만 끈다. 무엇을 끄고 무엇을 두는지는 application-loadtest.yaml에 있다.
       - SPRING_PROFILES_ACTIVE=loadtest
+      # 홈 추천 결과 캐시와 검색어 임베딩 캐시를 함께 켜고 끈다(위 머리말).
+      - RECOMMENDATION_CACHE_ENABLED=${CACHE_ENABLED:-true}
+      - AI_EMBEDDING_CACHE_ENABLED=${CACHE_ENABLED:-true}
     deploy:
       resources:
         limits:
