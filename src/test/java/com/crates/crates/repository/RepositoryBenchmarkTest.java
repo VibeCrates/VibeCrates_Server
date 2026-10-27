@@ -147,15 +147,17 @@ class RepositoryBenchmarkTest {
                         + "AND deleted_at IS NULL ORDER BY id LIMIT 1", String.class);
 
         benchmark("BoardRepository.findPopularBoards  (인기 보드, 10건)", i ->
-                boardRepository.findPopularBoards(Visibility.PUBLIC, PageRequest.of(0, 10)).size());
+                boardRepository.findPopularBoards(10).size());
 
         benchmark("BoardRepository.findActiveAiBoardBySignature", i ->
                 boardRepository.findActiveAiBoardBySignature(aiSignature).isPresent() ? 1 : 0);
 
         // 측정 계정이 실제로 만든 보드의 signature. 시더가 가입 시기만큼 사용자 보드를 만들어 둔다.
-        String customSignature = jdbcTemplate.queryForObject(
-                "SELECT content_signature FROM board WHERE user_id = ? AND board_type = 'USER_CUSTOM' "
-                        + "AND deleted_at IS NULL ORDER BY id LIMIT 1", String.class, userId);
+        Map<String, Object> customBoard = jdbcTemplate.queryForMap(
+                "SELECT content_signature, title FROM board WHERE user_id = ? AND board_type = 'USER_CUSTOM' "
+                        + "AND deleted_at IS NULL ORDER BY id LIMIT 1", userId);
+        String customSignature = (String) customBoard.get("content_signature");
+        String customTitle = (String) customBoard.get("title");
 
         benchmark("BoardRepository.findLikeCountById", i ->
                 boardRepository.findLikeCountById(boards.get(i % boards.size())).isPresent() ? 1 : 0);
@@ -169,8 +171,8 @@ class RepositoryBenchmarkTest {
         benchmark("BoardRepository.findCreatedByMe  (보관함 만든 것 탭, 20건)", i ->
                 boardRepository.findCreatedByMe(userId, PageRequest.of(0, 20)).size());
 
-        benchmark("BoardRepository.findActiveUserBoardBySignature", i ->
-                boardRepository.findActiveUserBoardBySignature(userId, customSignature).isPresent() ? 1 : 0);
+        benchmark("BoardRepository.findActiveUserBoard", i ->
+                boardRepository.findActiveUserBoard(userId, customSignature, customTitle).isPresent() ? 1 : 0);
     }
 
     /**

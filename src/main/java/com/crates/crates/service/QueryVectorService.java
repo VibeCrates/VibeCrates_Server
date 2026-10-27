@@ -60,7 +60,7 @@ public class QueryVectorService {
 
     /**
      * 기준 벡터마다 가장 가까운 query를 한 번의 Qdrant 요청으로 찾는다. 결과는 입력 순서와 같고,
-     * 찾지 못한 자리는 빈 Optional이다. 벡터마다 따로 검색하므로 findMostSimilarQuery를 여러 번 부른 것과 결과가 같다.
+     * 찾지 못한 자리는 빈 Optional이다. 벡터마다 따로 검색한다.
      */
     public List<Optional<QueryMatch>> findMostSimilarQueries(List<float[]> targetVectors) {
         return pointOperations.searchBatch(collectionName, targetVectors, 1)
@@ -71,16 +71,5 @@ public class QueryVectorService {
 
     private QueryMatch toMatch(ScoredPointResult result) {
         return new QueryMatch(result.id(), (String) result.payload().get(VectorPayload.QUERY), result.score());
-    }
-
-    public Optional<QueryMatch> findMostSimilarQuery(float[] targetVector) {
-        return pointOperations.search(collectionName, targetVector, 1)
-                .stream()
-                .findFirst()
-                .map(result -> new QueryMatch(
-                        result.id(),
-                        (String) result.payload().get(VectorPayload.QUERY),
-                        result.score()
-                ));
     }
 }
