@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <h2>데이터 준비</h2>
  * <pre>
  *   psql ... &lt; load-test/cleanup.sql          # 이전 실행의 흔적 + 공간 회수
- *   ./load-test/seed.sh 3 1 0.6 1.0           # 6개월 누적: 하루 좋아요 / 하루 보드 수정 / 인기 보드 비율 / 지프 s
+ *   ./load-test/seed.sh 3 1 0.6 1.0 1         # 6개월 누적: 하루 좋아요 / 하루 보드 수정 / 인기 보드 비율 / 지프 s / 하루 검색 좋아요
  *   VACUUM ANALYZE
  *   ./gradlew test --tests '*RepositoryBenchmarkTest' --rerun-tasks
  * </pre>
@@ -173,6 +173,84 @@ class RepositoryBenchmarkTest {
 
         benchmark("BoardRepository.findActiveUserBoard", i ->
                 boardRepository.findActiveUserBoard(userId, customSignature, customTitle).isPresent() ? 1 : 0);
+
+        benchmark("BoardRepository.findByIdForUpdate  (보드 수정·삭제, 잠금)", i ->
+                boardRepository.findByIdForUpdate(boards.get(i % boards.size())).isPresent() ? 1 : 0);
+    }
+
+    /**
+     * 추천·검색 보드의 첫 저장(INSERT ... ON CONFLICT DO NOTHING RETURNING id)과 검색 보드 조회.
+     *
+     * <p>검색 보드 조회는 시더가 만든 검색 보드(하루 검색 좋아요 1번, 6개월 114,000개)를 찾는다.</p>
+     *
+     * <p>저장은 반복마다 새 구성을 쓴다. 같은 구성을 다시 넣으면 충돌로 0행이 된다 — 그 경우(동시 저장에서 진 쪽)는
+     * 따로 잰다.</p>
+     */
+    @Test
+    @DisplayName("[성능] 추천·검색 보드 저장, 검색 보드 조회")
+    void benchmarkGeneratedBoardInsert() {
+        String existingAiSignature = jdbcTemplate.queryForObject(
+                "SELECT content_signature FROM board WHERE board_type = 'AI_RECOMMEND' "
+                        + "AND deleted_at IS NULL ORDER BY id LIMIT 1", String.class);
+
+        benchmark("BoardRepository.insertAiBoard  (새 AI 보드 저장·쓰기·롤백)", i ->
+                boardRepository.insertAiBoard("bench-ai-" + i, "bench-ai-sig-" + i).isPresent() ? 1 : 0, "픽스처");
+
+        benchmark("BoardRepository.insertAiBoard  (이미 있는 구성 — 충돌, 0행)", i ->
+                boardRepository.insertAiBoard("bench-ai-dup", existingAiSignature).isPresent() ? 1 : 0, "0 허용");
+
+        benchmark("BoardRepository.insertSearchBoard  (새 검색 보드 저장·쓰기·롤백)", i ->
+                boardRepository.insertSearchBoard("bench-search-" + i, "bench-search-sig-" + i).isPresent() ? 1 : 0, "픽스처");
+
+        List<String[]> searchBoards = jdbcTemplate.query(
+                "SELECT title, content_signature FROM board WHERE board_type = 'SEARCH_RECOMMEND' "
+                        + "AND title LIKE 'loadtest-search-%' ORDER BY id LIMIT 300",
+                (rs, n) -> new String[]{rs.getString("title"), rs.getString("content_signature")});
+        assertThat(searchBoards).as("시딩한 검색 보드가 없습니다 — seed.sh의 하루 검색 좋아요를 확인하세요").isNotEmpty();
+
+        benchmark("BoardRepository.findSearchBoard  (저장된 검색 보드 찾기)", i -> {
+            String[] board = searchBoards.get(i % searchBoards.size());
+            return boardRepository.findSearchBoard(board[0], board[1]).isPresent() ? 1 : 0;
+        });
+
+        // 같은 구성을 다른 검색어로 찾는다. 검색할 때마다 부르는데 대부분은 아직 저장되지 않은 검색어다.
+        benchmark("BoardRepository.findSearchBoard  (저장 전 검색어 — 없음)", i -> {
+            String[] board = searchBoards.get(i % searchBoards.size());
+            return boardRepository.findSearchBoard("bench-search-none-" + i, board[1]).isPresent() ? 1 : 0;
+        }, "0 허용");
+    }
+
+    /**
+     * 보드 삭제 — 주인의 소프트 삭제, 좋아요가 0이 된 보드의 완전 삭제(콘텐츠 먼저, 그다음 보드).
+     *
+     * <p>완전 삭제는 좋아요가 0인 AI 보드가 대상이다. 시딩한 AI 보드는 만든 사람의 좋아요가 있어 1 이상이므로,
+     * 그 좋아요만 받은 보드 231개의 좋아요를 트랜잭션 안에서 지워 "마지막 좋아요를 취소한 직후" 상태를 만든다.
+     * 운영과 같은 순서로 콘텐츠를 먼저 지우고(외래 키에 CASCADE가 없다) 같은 보드를 지운다.</p>
+     */
+    @Test
+    @DisplayName("[성능] 보드 삭제")
+    void benchmarkBoardDelete() {
+        int n = WARMUP + 1 + ITERATIONS;
+        List<Long> owned = jdbcTemplate.queryForList(
+                "SELECT id FROM board WHERE board_type = 'USER_CUSTOM' AND deleted_at IS NULL ORDER BY id LIMIT ?",
+                Long.class, n);
+        java.time.LocalDateTime now = java.time.LocalDateTime.now();
+        benchmark("BoardRepository.softDelete  (주인 삭제·쓰기·롤백)", i ->
+                boardRepository.softDelete(owned.get(i % owned.size()), now));
+
+        List<Long> unliked = jdbcTemplate.queryForList(
+                "SELECT id FROM board WHERE board_type = 'AI_RECOMMEND' AND like_count = 1 ORDER BY id LIMIT ?",
+                Long.class, n);
+        assertThat(unliked).as("좋아요가 1개인 AI 보드가 %d개 필요합니다", n).hasSize(n);
+        String ids = unliked.stream().map(String::valueOf).collect(Collectors.joining(","));
+        jdbcTemplate.update("DELETE FROM board_feedback WHERE board_id IN (" + ids + ")");
+        jdbcTemplate.update("UPDATE board SET like_count = 0 WHERE id IN (" + ids + ")");
+
+        benchmark("BoardItemRepository.deleteItemsIfUnliked  (완전 삭제 ① 콘텐츠·쓰기·롤백)", i ->
+                boardItemRepository.deleteItemsIfUnliked(unliked.get(i)));
+
+        benchmark("BoardRepository.deleteIfUnliked  (완전 삭제 ② 보드·쓰기·롤백)", i ->
+                boardRepository.deleteIfUnliked(unliked.get(i)));
     }
 
     /**
@@ -184,7 +262,7 @@ class RepositoryBenchmarkTest {
      * <p>기존 쿼리는 운영 코드에서 지웠으므로 여기서 네이티브로 되살린다. 비교를 재현할 수
      * 있게 하려고 남기는 것이지, 되돌리려는 것이 아니다.</p>
      *
-     * <p>측정 계정은 시더가 만든 그대로 쓴다 — 가장 오래 쓴 사용자(6개월 시나리오에서 좋아요 540 /
+     * <p>측정 계정은 시더가 만든 그대로 쓴다 — 가장 오래 쓴 사용자(6개월 시나리오에서 좋아요 720 /
      * 만든 보드 180)다. 예전에는 "내가 만든 보드"를 2,000·20,000개 트랜잭션 안에서 몰아 넣고 롤백했는데,
      * 그 규모는 실제 가정에서 나온 값이 아니었고 롤백 뒤에도 board 인덱스에 빈 페이지가 남았다.</p>
      *
@@ -265,6 +343,12 @@ class RepositoryBenchmarkTest {
 
         benchmark("ContentRepository.searchContentIdsByTitle  (pg_trgm, 20건)", i ->
                 contentRepository.searchContentIdsByTitle(keyword, 20, 0).size());
+
+        // 벡터 CSV 적재가 batch-size(기본 256)줄마다 부른다. 기동 때만 돈다.
+        List<String> bookKeys = jdbcTemplate.queryForList(
+                "SELECT source_key FROM content WHERE dtype = 'BOOK' ORDER BY id LIMIT 256", String.class);
+        benchmark("ContentRepository.findIdsBySourceKeys  (벡터 적재, 256건)", i ->
+                contentRepository.findIdsBySourceKeys("BOOK", bookKeys).size());
     }
 
     // ── OnboardingContentRepository ─────────────────────────────────────────
@@ -377,6 +461,20 @@ class RepositoryBenchmarkTest {
                 staleUserIds(100).size());
     }
 
+    /** 취향 벡터 저장. 좋아요마다 도는 재계산의 마지막 단계다. 반복마다 다른 사용자를 쓴다. */
+    @Test
+    @DisplayName("[성능] UserVectorRepository.updateVector")
+    void benchmarkUpdateVector() {
+        List<Long> userIds = jdbcTemplate.queryForList(
+                "SELECT user_id FROM user_vector ORDER BY user_id LIMIT ?", Long.class, WARMUP + 1 + ITERATIONS);
+        float[] vector = new float[768];
+        Arrays.fill(vector, 0.036f);
+        java.time.LocalDateTime now = java.time.LocalDateTime.now();
+
+        benchmark("UserVectorRepository.updateVector  (재계산 저장·쓰기·롤백)", i ->
+                userVectorRepository.updateVector(userIds.get(i % userIds.size()), vector, now));
+    }
+
     private List<Long> staleUserIds(int limit) {
         return userVectorRepository.findStaleUserIds(
                 Rating.LIKE, java.time.LocalDateTime.now().minusMinutes(5), PageRequest.of(0, limit));
@@ -435,7 +533,7 @@ class RepositoryBenchmarkTest {
 
     /**
      * 측정 계정 — 좋아요를 가장 많이 가진 부하테스트 계정. 6개월 시나리오에서는 가장 오래 쓴
-     * 1개월차 가입자다(좋아요 540 / 만든 보드 180). 하드코딩한 id를 쓰면 안 된다 —
+     * 1개월차 가입자다(좋아요 720 / 만든 보드 180, 검색 보드가 없던 이전 환경에서는 540 / 180). 하드코딩한 id를 쓰면 안 된다 —
      * seed.sh는 매번 새 계정을 만들고 cleanup.sql이 지우므로 id가 고정되지 않는다.
      */
     private Long userWithMostLikes() {
