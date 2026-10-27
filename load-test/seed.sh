@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # 부하테스트용 계정·보드·좋아요를 준비한다 — 6개월 누적 시나리오.
 #
-#   ./load-test/seed.sh [하루좋아요] [하루보드수정] [인기보드비율] [지프s]
-#   ./load-test/seed.sh 3 1 0.6 1.0      # 기본. 계정 1,200 / 보드 250,800 / 좋아요 342,000
+#   ./load-test/seed.sh [하루좋아요] [하루보드수정] [인기보드비율] [지프s] [하루검색좋아요]
+#   ./load-test/seed.sh 3 1 0.6 1.0 1    # 기본. 계정 1,200 / 보드 364,800 / 좋아요 456,000
+#   ./load-test/seed.sh 3 1 0.6 1.0 0    # 검색 보드 없이(2026-10-27 이전 환경). 보드 250,800 / 좋아요 342,000
 #
 # 가입 시기별 인원(누적 100 → 200 → 500 → 800 → 1,000 → 1,200명)은 seed.sql 맨 위의 cohort 표에 있다.
 # 가정과 근거는 seed.sql 머리말과 Notion "레포지토리 메서드 성능 테스트".
@@ -16,9 +17,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 set -a; . ./crates_server.env; set +a
 
-LIKES_PER_DAY="${1:-3}"; EDITS_PER_DAY="${2:-1}"; POPULAR_RATIO="${3:-0.6}"; ZIPF_S="${4:-1.0}"
+LIKES_PER_DAY="${1:-3}"; EDITS_PER_DAY="${2:-1}"; POPULAR_RATIO="${3:-0.6}"; ZIPF_S="${4:-1.0}"; SEARCH_LIKES_PER_DAY="${5:-1}"
 awk -v r="$POPULAR_RATIO" 'BEGIN{exit !(r>=0 && r<=1)}' || { echo "인기 보드 비율은 0~1이어야 합니다: $POPULAR_RATIO" >&2; exit 1; }
 awk -v s="$ZIPF_S" 'BEGIN{exit !(s>0)}' || { echo "지프 s는 0보다 커야 합니다: $ZIPF_S" >&2; exit 1; }
+awk -v n="$SEARCH_LIKES_PER_DAY" 'BEGIN{exit !(n>=0)}' || { echo "하루 검색 좋아요는 0 이상이어야 합니다: $SEARCH_LIKES_PER_DAY" >&2; exit 1; }
 
 PSQL="docker exec -i -e PGPASSWORD=$POSTGRESQL_PASSWORD postgres_server psql -U $POSTGRESQL_USERNAME -d crates"
 PSQL1="docker exec -e PGPASSWORD=$POSTGRESQL_PASSWORD postgres_server psql -U $POSTGRESQL_USERNAME -d crates -t -A -c"
@@ -57,17 +59,19 @@ if [ "$($PSQL1 "SELECT count(*) FROM user_vector uv JOIN users u ON u.id=uv.user
     case "$code" in 200) echo "완료 (콘텐츠 $ids)";; *) echo "실패(HTTP $code)" >&2; exit 1;; esac
 fi
 
-echo "준비: 하루 좋아요 ${LIKES_PER_DAY}번(인기 보드 ${POPULAR_RATIO}) / 하루 보드 수정 ${EDITS_PER_DAY}번 / 지프 s=${ZIPF_S}"
+echo "준비: 하루 좋아요 ${LIKES_PER_DAY}번(인기 보드 ${POPULAR_RATIO}) / 하루 검색 좋아요 ${SEARCH_LIKES_PER_DAY}번 / 하루 보드 수정 ${EDITS_PER_DAY}번 / 지프 s=${ZIPF_S}"
 started=$(date +%s)
-read -r users e_users ai e_ai custom e_custom items e_items likes e_likes \
+read -r users e_users ai e_ai search e_search custom e_custom items e_items likes e_likes \
         max_ul e_max_ul max_ub e_max_ub top_like top100 liked2 <<<"$(
     $PSQL -q -t -A -F' ' -v likes_per_day="$LIKES_PER_DAY" -v edits_per_day="$EDITS_PER_DAY" \
-          -v popular_ratio="$POPULAR_RATIO" -v zipf_s="$ZIPF_S" < load-test/seed.sql
+          -v popular_ratio="$POPULAR_RATIO" -v zipf_s="$ZIPF_S" -v search_likes_per_day="$SEARCH_LIKES_PER_DAY" \
+          < load-test/seed.sql
 )"
 
 printf '  %-22s %12s %12s\n' "" "실제" "기대"
 printf '  %-22s %12s %12s\n' "계정" "$users" "$e_users"
 printf '  %-22s %12s %12s\n' "AI 추천 보드" "$ai" "$e_ai"
+printf '  %-22s %12s %12s\n' "검색 추천 보드" "$search" "$e_search"
 printf '  %-22s %12s %12s\n' "사용자가 만든 보드" "$custom" "$e_custom"
 printf '  %-22s %12s %12s\n' "board_item" "$items" "$e_items"
 printf '  %-22s %12s %12s\n' "좋아요" "$likes" "$e_likes"
@@ -80,7 +84,7 @@ echo "  ($(( $(date +%s) - started ))초)"
 # 가정과 다른 데이터로 재면 결과를 "6개월 운영 상태"라고 부를 수 없다. 개수가 하나라도 어긋나면 멈춘다.
 #   보드가 모자라면  무작위 콘텐츠 조합이 겹쳐 ON CONFLICT가 버린 것
 #   좋아요가 모자라면 인기 보드 추첨이 겹침을 빼고 나서 필요한 수를 채우지 못한 것
-for pair in "$users:$e_users:계정" "$ai:$e_ai:AI 보드" "$custom:$e_custom:사용자 보드" \
+for pair in "$users:$e_users:계정" "$ai:$e_ai:AI 보드" "$search:$e_search:검색 보드" "$custom:$e_custom:사용자 보드" \
             "$items:$e_items:board_item" "$likes:$e_likes:좋아요" "$max_ul:$e_max_ul:최다 사용자 좋아요"; do
     IFS=: read -r got want name <<<"$pair"
     [ "$got" = "$want" ] || { echo "  ⚠️  ${name}이(가) 기대와 다릅니다: ${got} (기대 ${want})" >&2; exit 1; }
