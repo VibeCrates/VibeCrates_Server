@@ -133,7 +133,7 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
      *
      * <p>COALESCE는 "내 보관함에 들어온 시각"을 뜻한다. 좋아요한 보드면 좋아요를 누른 시각,
      * 내가 만든 보드면 생성 시각이다. 둘 다인 보드는 좋아요 시각을 쓴다. 두 값 모두 항상
-     * 채워지므로(saveFeedback, newUserBoard, likeNewBoard) null이 새지 않는다.</p>
+     * 채워지므로(saveFeedback, newUserBoard, likeRecommendedBoard) null이 새지 않는다.</p>
      *
      * <p>좋아요를 <b>LEFT JOIN</b>으로 바꾼 이유는 정렬 키(f.createdAt)를 꺼내야 해서다.
      * EXISTS 서브쿼리로는 조건 판정만 되고 값을 가져올 수 없다. uk_board_feedback_board_user가

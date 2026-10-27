@@ -60,7 +60,7 @@ DB 비밀번호는 넣지 않는다 — RDS가 Secrets Manager에 만들고 관�
 P=/crates/prod
 put() { aws ssm put-parameter --name "$1" --type SecureString --overwrite --value "$2" >/dev/null; }
 put $P/jwt-secret-key                "$(openssl rand -base64 48)"
-put $P/search-like-token-secret      "$(openssl rand -base64 48)"   # 검색 보드 좋아요 토큰 서명 키
+put $P/search-like-token-secret      "$(openssl rand -base64 48)"   # 검색·홈 추천 보드 좋아요 토큰 서명 키
 put $P/qdrant-api-key                "$(openssl rand -hex 32)"
 put $P/oauth/google-client-id        '...'
 put $P/oauth/google-client-secret    '...'

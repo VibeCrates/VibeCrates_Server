@@ -1,7 +1,6 @@
 package com.crates.crates.service;
 
 import com.crates.crates.DTO.BoardContentIdDto;
-import com.crates.crates.DTO.BoardLikeRequest;
 import com.crates.crates.DTO.BoardLikeResponse;
 import com.crates.crates.DTO.BoardSaveRequest;
 import com.crates.crates.DTO.BoardWithContentsDto;
@@ -506,19 +505,20 @@ public class BoardService {
      * <p>같은 구성이면 같은 보드다. 이 규칙이 없으면 재추천 후 좋아요를 누를 때마다 내용이 똑같은 보드가
      * 계속 쌓이고 좋아요가 여러 행으로 갈라져 인기 랭킹이 흐려진다.</p>
      *
+     * <p>제목과 콘텐츠는 요청이 아니라 검증된 토큰에서 온 값이다(BoardLikeTokenService).</p>
+     *
      * <p>응답의 boardId를 프론트가 반드시 반영해야 다음 클릭이 좋아요 취소로 이어진다.
      */
     @Transactional
-    public BoardLikeResponse likeNewBoard(BoardLikeRequest request, Long userId)
+    public BoardLikeResponse likeRecommendedBoard(String title, List<Long> contentIds, Long userId)
     {
-        return likeGeneratedBoard(GeneratedBoard.AI_RECOMMEND, Board.normalizeTitle(request.title()),
-                request.contentIds(), userId);
+        return likeGeneratedBoard(GeneratedBoard.AI_RECOMMEND, Board.normalizeTitle(title), contentIds, userId);
     }
 
     /**
      * 검색 보드에 좋아요. 제목(검색어)과 구성이 같은 보드가 있으면 거기에 좋아요를 남기고, 없으면 저장한 뒤 남긴다.
      *
-     * <p>제목과 콘텐츠는 요청이 아니라 검증된 토큰에서 온 값이다(SearchLikeTokenService).</p>
+     * <p>제목과 콘텐츠는 요청이 아니라 검증된 토큰에서 온 값이다(BoardLikeTokenService).</p>
      *
      * @param title {@link Board#normalizeTitle}을 거친 검색어
      */

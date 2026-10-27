@@ -45,15 +45,15 @@ export function login(tag) {
 }
 
 /**
- * 홈 추천 보드에 좋아요. 프론트처럼 추천 응답의 제목과 콘텐츠 구성을 그대로 보낸다.
+ * 홈 추천 보드에 좋아요. 추천 응답의 likeToken(서버가 서명한 제목·구성)을 보낸다.
  *
  * 같은 구성의 AI 보드가 있으면 거기에 좋아요하고, 없으면 저장(INSERT ... ON CONFLICT DO NOTHING)한 뒤 좋아요한다.
  * 저장된 보드는 좋아요를 취소해 0개가 되면 완전히 지워진다 — 좋아요→취소 짝이면 데이터가 원래대로 돌아온다.
  */
-export function likeRecommendedBoard(token, title, contentIds) {
+export function likeRecommendedBoard(token, likeToken) {
   return http.post(
     `${BASE}/api/boards/likes`,
-    JSON.stringify({ title, contentIds }),
+    JSON.stringify({ likeToken }),
     { ...auth(token), tags: { name: 'POST /api/boards/likes' } },
   );
 }

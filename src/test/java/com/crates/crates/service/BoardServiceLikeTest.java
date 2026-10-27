@@ -1,6 +1,5 @@
 package com.crates.crates.service;
 
-import com.crates.crates.DTO.BoardLikeRequest;
 import com.crates.crates.DTO.BoardLikeResponse;
 import com.crates.crates.DTO.BoardSaveRequest;
 import com.crates.crates.Global.exception.BusinessException;
@@ -197,7 +196,7 @@ class BoardServiceLikeTest {
             when(boardRepository.findById(recreatedId))
                     .thenReturn(Optional.of(board(recreatedId, BoardType.AI_RECOMMEND)));
 
-            BoardLikeResponse response = service.likeNewBoard(new BoardLikeRequest(" 새벽 감성 ", CONTENT_IDS), USER_ID);
+            BoardLikeResponse response = service.likeRecommendedBoard(" 새벽 감성 ", CONTENT_IDS, USER_ID);
 
             assertEquals(recreatedId, response.boardId());
             verify(boardRepository).insertAiBoard("새벽 감성", SIGNATURE);

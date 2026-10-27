@@ -1,6 +1,8 @@
 package com.crates.crates.service;
 
+import com.crates.crates.DTO.BoardLikeResponse;
 import com.crates.crates.DTO.BoardWithContentsDto;
+import com.crates.crates.DTO.RecommendedBoardDto;
 import com.crates.crates.DTO.ContentResponseDto;
 import com.crates.crates.entity.board.Board;
 import lombok.RequiredArgsConstructor;
@@ -36,6 +38,7 @@ public class RecommendationService {
     private final BoardTitleService boardTitleService;
     private final RecommendationCache recommendationCache;
     private final BoardContentMix boardContentMix;
+    private final BoardLikeTokenService boardLikeTokenService;
 
     /**
      * 사용자 취향 벡터 근처에서 서로 다른 제목 4개를 고르고, 제목마다 콘텐츠 8건을 담아 홈 추천 보드를 만든다.
@@ -44,13 +47,13 @@ public class RecommendationService {
      * 그 boardId와 좋아요 상태를 함께 내려준다. 그래야 좋아요를 누른 뒤 새로고침해도
      * 하트가 채워진 상태로 남는다.</p>
      */
-    public List<BoardWithContentsDto> recommendBoards(Long userId)
+    public List<RecommendedBoardDto> recommendBoards(Long userId)
     {
         UserVectorService.VectorSnapshot vector = userVectorService.getSnapshot(userId);
 
         // 이 취향 벡터로 계산해 둔 결과가 있으면 Qdrant를 건너뛴다(RecommendationCache).
         // 저장 여부·좋아요 상태·콘텐츠 요약은 캐시에 없으므로 아래에서 매번 새로 읽는다.
-        Optional<List<BoardWithContentsDto>> cached = recommendationCache.get(userId, vector.version())
+        Optional<List<RecommendedBoardDto>> cached = recommendationCache.get(userId, vector.version())
                 .flatMap(entry -> fromCache(entry, userId));
         if (cached.isPresent())
         {
@@ -101,7 +104,7 @@ public class RecommendationService {
     /**
      * 캐시의 콘텐츠 id와 제목으로 보드를 다시 만든다. 그 사이 콘텐츠가 지워져 개수가 맞지 않으면 빈 값 — 다시 계산한다.
      */
-    private Optional<List<BoardWithContentsDto>> fromCache(RecommendationCache.Entry entry, Long userId)
+    private Optional<List<RecommendedBoardDto>> fromCache(RecommendationCache.Entry entry, Long userId)
     {
         List<ContentResponseDto> contents = contentService.getContentSummaries(entry.contentIds());
         if (contents.size() != entry.contentIds().size())
@@ -125,18 +128,40 @@ public class RecommendationService {
         return slices;
     }
 
-    /** 같은 구성의 보드가 이미 저장돼 있으면 저장된 보드(제목·좋아요 상태)를, 아니면 정해 둔 제목으로 미저장 보드를 만든다. */
-    private List<BoardWithContentsDto> toBoards(List<List<ContentResponseDto>> slices, List<String> titles, Long userId)
+    /**
+     * 같은 구성의 보드가 이미 저장돼 있으면 저장된 보드(제목·좋아요 상태)를, 아니면 정해 둔 제목으로 미저장 보드를 만든다.
+     *
+     * <p>보드마다 좋아요 토큰을 붙인다. 토큰의 제목은 화면에 보이는 제목 그대로다 — 저장된 보드면 저장 시점의 제목이다.
+     * 캐시에서 되살린 보드도 여기서 새로 서명하므로 토큰은 캐시에 담지 않는다(서명은 수 마이크로초).</p>
+     */
+    private List<RecommendedBoardDto> toBoards(List<List<ContentResponseDto>> slices, List<String> titles, Long userId)
     {
-        List<BoardWithContentsDto> boards = new ArrayList<>(slices.size());
+        List<RecommendedBoardDto> boards = new ArrayList<>(slices.size());
         for (int i = 0; i < slices.size(); i++)
         {
             List<ContentResponseDto> slice = slices.get(i);
             String title = titles.get(i);
-            boards.add(boardService.findSavedGeneratedBoard(slice, userId)
-                    .orElseGet(() -> BoardWithContentsDto.unsaved(title, slice)));
+            BoardWithContentsDto board = boardService.findSavedGeneratedBoard(slice, userId)
+                    .orElseGet(() -> BoardWithContentsDto.unsaved(title, slice));
+            String likeToken = boardLikeTokenService.issue(BoardLikeTokenService.Purpose.RECOMMEND, board.title(),
+                    slice.stream().map(ContentResponseDto::id).toList());
+            boards.add(new RecommendedBoardDto(board.boardId(), board.title(), board.likeCount(), board.liked(),
+                    board.contents(), likeToken));
         }
         return boards;
+    }
+
+    /**
+     * 홈 추천 보드에 좋아요. 토큰을 검증하고 <b>토큰 안의</b> 제목과 콘텐츠로 저장한다.
+     *
+     * <p>boardId가 있어도 이 경로를 쓴다. 서버가 "있으면 좋아요, 없으면 저장 후 좋아요"를 처리하므로 그 사이 보드가
+     * 지워졌어도 실패하지 않는다. 예전에는 프론트가 보낸 제목과 콘텐츠를 그대로 믿어, 요청을 직접 만들면 아무 제목과
+     * 구성으로 AI 추천 보드를 만들 수 있었다(2026-10-28 토큰으로 바꿈, 검색 보드와 같은 방식).</p>
+     */
+    public BoardLikeResponse likeRecommendedBoard(String likeToken, Long userId)
+    {
+        BoardLikeTokenService.Verified verified = boardLikeTokenService.verify(BoardLikeTokenService.Purpose.RECOMMEND, likeToken);
+        return boardService.likeRecommendedBoard(verified.title(), verified.contentIds(), userId);
     }
 
     /**

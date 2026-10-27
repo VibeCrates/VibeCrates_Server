@@ -242,9 +242,10 @@ jwt:
   expiry: 3600000   # 1시간 (ms)
   refresh-expiry: 1209600000  # 14일
 
-# 검색 보드 좋아요 토큰의 HMAC 키(SearchLikeTokenService). 32바이트 이상. 예: openssl rand -base64 48
+# 검색·홈 추천 보드 좋아요 토큰의 HMAC 키(BoardLikeTokenService). 32바이트 이상. 예: openssl rand -base64 48
 # 키를 바꿀 때는 새 키를 secret에, 옛 키를 previous-secret에 하루쯤 둔다. 그 사이 발급된 토큰도 통과한다.
-search:
+# 환경 변수 이름은 검색 보드에만 쓰던 때의 것이다. 운영 SSM(/crates/prod/search-like-token-secret)과 맞춰 그대로 둔다.
+board:
   like-token:
     secret: ${SEARCH_LIKE_TOKEN_SECRET}
     previous-secret: ${SEARCH_LIKE_TOKEN_PREVIOUS_SECRET:}
