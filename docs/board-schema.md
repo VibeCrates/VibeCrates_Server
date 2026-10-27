@@ -647,7 +647,7 @@ token   = base64url(payload) + "." + base64url(HMAC-SHA256(서버 비밀 키, pa
 - **만료 시각을 검사하지 않는다.** 서명이 맞으면 오래돼도 내용은 진짜이고, 좋아요는 멱등이라 재사용해도 해가 없다.
   서버가 몰래 다시 검색하면 사용자가 본 적 없는 8건에 좋아요가 붙을 수 있어서, 만료 후 재검색 안은 버렸다.
 - 서명 비교는 상수 시간(`MessageDigest.isEqual`)으로 한다.
-- `purpose`를 넣어 다른 기능의 토큰과 섞이지 않게 한다.
+- `purpose`를 넣어 다른 기능의 토큰과 섞이지 않게 한다. 홈 추천 보드도 같은 키로 `"recommend-like"` 토큰을 쓴다(11-11).
 - 키를 교체할 때는 하루 정도 이전 키도 함께 받아 준다. 그 뒤 이전 키 토큰은 실패하고, 프론트가 다시 검색한다.
 
 **좋아요 (검색 보드 전용 경로, 토큰을 보낸다)**
@@ -785,14 +785,30 @@ CREATE UNIQUE INDEX uk_board_user_title_signature
 |---|---|
 | `GET /api/search/board?keyword=` | `SearchBoardDto` — 보드 필드 + `likeToken` |
 | `POST /api/search/board/likes` `{ likeToken }` | 검색 보드 좋아요. "있으면 좋아요, 없으면 저장 후 좋아요" |
-| `POST /api/boards/likes` `{ title, contentIds }` | 홈 추천 보드 좋아요. boardId가 있어도 이 경로 |
+| `GET /api/boards/recommendation/user` | `RecommendedBoardDto` 4개 — 보드 필드 + `likeToken` (11-11) |
+| `POST /api/boards/likes` `{ likeToken }` | 홈 추천 보드 좋아요. boardId가 있어도 이 경로 (11-11) |
 | `POST /api/boards/{id}/likes` | 저장된 보드 좋아요(인기 목록·보관함). 지워진 보드면 400 "삭제된 보드입니다." |
 | `DELETE /api/boards/{id}/likes` | 좋아요 취소. 보드가 지워졌으면(또는 이미 없으면) 응답 `boardId`가 `null` |
 | `DELETE /api/boards/{id}` | 내 보드 삭제(주인만) |
 
 - 보드 응답(`BoardWithContentsDto`)에 `deleted`가 추가됐다. 주인이 지운 보드면 `true`이고, 좋아요한 사람의 보관함에서만 보인다.
 - 운영 비밀값 `SEARCH_LIKE_TOKEN_SECRET`(SSM `/crates/prod/search-like-token-secret`)이 없으면 앱이 뜨지 않는다.
-  로컬은 `crates_server.env`에 같은 이름으로 둔다.
+  로컬은 `crates_server.env`에 같은 이름으로 둔다. 홈 추천 토큰도 같은 키로 서명한다(11-11).
+
+### 11-11. 홈 추천 보드에도 토큰 (2026-10-28)
+
+홈 추천 보드 좋아요는 프론트가 보낸 `{ title, contentIds }`를 그대로 믿었다. 서버는 콘텐츠가 있는지만 확인해서,
+요청을 직접 만들면 아무 제목과 구성으로 공개 AI 추천 보드를 만들 수 있었다. 검색 보드(11-4)와 같은 문제라 같은 방식으로 막는다.
+
+- 추천 응답의 보드마다 `likeToken`을 붙인다. payload의 용도는 `"recommend-like"`, 제목은 **화면에 보이는 제목**이다
+  (저장된 보드면 저장 시점의 제목, 아니면 이번에 고른 query).
+- 좋아요(`POST /api/boards/likes`)는 `{ likeToken }`만 받고 토큰 안의 제목·콘텐츠로 처리한다. 나머지는 11-4와 같다.
+- 서명 키는 검색 보드와 같다. 용도(`p`)가 달라 검색 토큰으로 AI 보드를, 추천 토큰으로 검색 보드를 만들 수 없다.
+  서비스 이름은 `SearchLikeTokenService` → `BoardLikeTokenService`, 설정은 `search.like-token.*` → `board.like-token.*`로 바꿨고
+  환경 변수·SSM 이름은 운영과 맞추려고 그대로 뒀다.
+- **Redis 추천 캐시로 검증하지 않은 이유.** 캐시는 취향 벡터 버전으로 가르는데, 좋아요를 누르면 벡터가 다시 계산돼 버전이 바뀐다.
+  같은 화면의 두 번째 보드에 좋아요할 때 캐시와 맞지 않을 수 있다. 토큰은 서버에 아무것도 남기지 않아 이런 어긋남이 없다.
+- 토큰은 캐시에 담지 않고 응답마다 새로 서명한다. HMAC 한 번은 수 마이크로초라 추천 응답 시간(수십~수백 ms)에 비해 무시할 만하다.
 
 ---
 
