@@ -34,7 +34,18 @@ docker compose --env-file crates_server.env -f docker-compose.yml -f docker-comp
 | qdrant | 1 (`QDRANT_CPUS`) | 4g | query 벡터 37만 개를 함께 싣는다 |
 
 상한은 "클라우드에서 자원을 얼마나 써야 하나"를 정하려고 건다. 코어 수 실험은 파일을 고치지 않고
-`BACKEND_CPUS=2 docker compose ... up -d backend`로 한다. redis·minio는 측정할 API가 거치지 않아 두지 않는다.
+`BACKEND_CPUS=2 docker compose ... up -d backend`로 한다. redis·minio에는 상한을 두지 않는다.
+
+**캐시(Redis)** — 홈 추천 결과와 검색어 임베딩을 캐시한다. API 개별 측정(`api-*`)은 끄고, 혼합 측정(`mixed`)은 켠다.
+`run-sweep.sh`가 시나리오와 맞는지 확인하고, 맞지 않으면 띄울 명령을 알려 주고 멈춘다.
+
+```bash
+CACHE_ENABLED=false docker compose --env-file crates_server.env -f docker-compose.yml -f docker-compose.loadtest.yml up -d backend  # 개별
+docker compose --env-file crates_server.env -f docker-compose.yml -f docker-compose.loadtest.yml up -d backend                      # 혼합
+```
+
+개별 측정에서 켜 두면 같은 계정이 반복해 부를 때 첫 요청 뒤로는 캐시만 재게 되어 추천·검색 계산의 비용이 보이지 않는다.
+혼합 측정은 운영처럼 캐시를 거친다 — 홈 추천은 좋아요를 눌러야 바뀐다. 혼합은 시작할 때 캐시를 비운다.
 커넥션 풀은 측정용 값이 아니라 운영 값이라 `application.yaml`에 있다(10개).
 
 > qdrant와 postgres는 이름 있는 볼륨에 저장한다. 덧씌우기를 적용하거나 상한을 바꿔 컨테이너가 재생성돼도
@@ -42,7 +53,7 @@ docker compose --env-file crates_server.env -f docker-compose.yml -f docker-comp
 
 처음부터 띄울 때(`down -v` 후) 기동에 4~5분 걸린다(콘텐츠 18만 건 시딩 + 이미지 업로드 + Qdrant 적재).
 
-> **query 벡터** — 보드 제목은 콘텐츠 평균 벡터와 가장 가까운 query로 정한다(`docs/board-schema.md` 4장).
+> **query 벡터** — 홈 추천 보드의 제목 후보다. 취향 근처 query 중 서로 다른 4개를 먼저 고르고 그 제목에 맞는 콘텐츠를 담는다(`docs/board-schema.md` 4장).
 > AI 개발자가 만든 query 벡터 CSV(book·movie·music) 셋을 기동 때 `query_vector` 한 컬렉션에 넣는다(`QueryVectorLoader`).
 > 같은 영어 문장은 한 번만 넣어 372,667개다. 처음 적재는 몇 분 걸리고, 이후 기동은 개수·모델 버전을 확인해 건너뛴다.
 > 컨테이너 메모리 합계가 9GB라 **Docker Desktop 메모리를 12GB 이상**으로 둔다.
@@ -297,6 +308,14 @@ KEEP_GOING=1 ./load-test/run-sweep.sh mixed 25 50 75 100 150               # 실
 - **시나리오** — `scenarios/api-*.js`는 엔드포인트 하나씩, `scenarios/mixed.js`는 화면 흐름 비율로 섞은 것
   (홈 추천·인기·내 보드 각 14%, 콘텐츠 상세 16%, 보관함 8%, 제목 검색 8%, 검색 보드 6%, 좋아요·취소 20%).
   혼합은 엔드포인트마다 목표를 따로 걸고 `rateN-endpoints.txt`에 엔드포인트별 결과를 남긴다.
+- **혼자 보낼 수 없는 요청은 짝으로 잰다** — 좋아요→취소를 한 쌍으로 보내 데이터를 원래대로 유지하고, 응답 시간은
+  요청마다 따로 판정한다(`rateN-endpoints.txt`). 도착률은 쌍의 수다.
+
+  | 시나리오 | 무엇을 | 따로 보는 요청 |
+  |---|---|---|
+  | `api-like-toggle` | 저장된 보드의 좋아요→취소. 보드는 짝을 보내도 지워지지 않는 것만 고른다(`lib/boards.js`) | `like`, `unlike` |
+  | `api-recommend-like` | 홈 추천 보드의 첫 좋아요(저장)→취소(완전 삭제). 추천은 setup에서 미리 받는다 | `recommend_like`, `unlike` |
+  | `api-search-like` | 검색 보드의 첫 좋아요(토큰 검증·저장)→취소(완전 삭제). 검색은 setup에서 미리 한다 | `search_like`, `unlike` |
   AI 서버가 꺼져 있으면 `SKIP_AI=1`로 검색 보드를 빼고 나머지 비율을 늘려 잰다.
 - **로그인은 측정 밖에서** — `lib/tokens.sh`가 계정 200개(6명마다 1명, 가입 시기 분포 유지)로 미리 로그인한다.
   k6 setup에서 하면 BCrypt 200번이 자원 기록에 섞인다(인기 보드 5/s에서 backend CPU 397%로 기록됨).

@@ -22,8 +22,12 @@
 # 결과는 load-test/results/sweep-<시나리오>-<시각>/ 에 단계마다 k6 요약(rateN.json), 자원 기록(rateN.csv),
 # 그 단계의 비싼 쿼리 상위 5개(rateN-pgss.txt)가 남는다.
 #
-# 데이터 상태 — 읽기 시나리오는 상태를 바꾸지 않는다. api-like-toggle은 좋아요→취소 짝이라 개수는 그대로다.
+# 데이터 상태 — 읽기 시나리오는 상태를 바꾸지 않는다. 좋아요 시나리오(api-like-toggle, api-recommend-like,
+# api-search-like)는 좋아요→취소 짝이라 개수는 그대로다 — 새로 저장된 추천·검색 보드는 취소로 다시 지워진다.
 # 단계 사이에는 pg_stat_statements만 초기화한다.
+#
+# 캐시 — API 개별 측정(api-*)은 Redis 캐시를 끄고(CACHE_ENABLED=false로 띄운 backend), 혼합 측정(mixed)은 켜고 잰다
+# (docker-compose.loadtest.yml 머리말). 맞지 않으면 시작하지 않는다. 확인을 건너뛰려면 CACHE_CHECK=0.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 set -a; . ./crates_server.env; set +a
@@ -40,10 +44,34 @@ OUT_DIR="load-test/results/sweep-${NAME}-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT_DIR"
 
 PG="docker exec -e PGPASSWORD=$POSTGRESQL_PASSWORD postgres_server psql -U $POSTGRESQL_USERNAME -d crates -t -A -c"
-# 좋아요 시나리오가 고를 보드 id 범위. 시딩 보드는 id가 이어져 있다(prepare.sh가 다시 만들면 시퀀스가 이어져 1부터가 아니다).
-BOARD_ID_RANGE=$($PG "SELECT min(id), max(id) FROM board")
-IFS="|" read -r MIN_BOARD_ID MAX_BOARD_ID <<< "$BOARD_ID_RANGE"
-echo "보드 id 범위: ${MIN_BOARD_ID} ~ ${MAX_BOARD_ID}"
+
+# 캐시 상태 확인. 컨테이너 환경 변수에 없으면 application.yaml 기본값(켬)이다.
+[ "$NAME" = "mixed" ] && WANT_CACHE=true || WANT_CACHE=false
+CACHE_NOW=$(docker inspect backend_server --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null |
+    sed -n 's/^RECOMMENDATION_CACHE_ENABLED=//p')
+CACHE_NOW="${CACHE_NOW:-true}"
+if [ "${CACHE_CHECK:-1}" = "1" ] && [ "$CACHE_NOW" != "$WANT_CACHE" ]; then
+    echo "캐시가 이 시나리오와 맞지 않습니다: 지금 ${CACHE_NOW}, ${NAME}은(는) ${WANT_CACHE}로 잰다." >&2
+    if [ "$WANT_CACHE" = "false" ]; then
+        echo "  CACHE_ENABLED=false docker compose --env-file crates_server.env -f docker-compose.yml -f docker-compose.loadtest.yml up -d backend" >&2
+    else
+        echo "  docker compose --env-file crates_server.env -f docker-compose.yml -f docker-compose.loadtest.yml up -d backend" >&2
+    fi
+    exit 1
+fi
+echo "캐시: ${CACHE_NOW}"
+# 혼합 측정은 캐시를 비우고 시작한다. 앞선 실행이 남긴 캐시가 있으면 워밍업 전부터 적중해 실행마다 출발점이 달라진다.
+if [ "$CACHE_NOW" = "true" ]; then
+    for pattern in 'reco:v1:*' 'emb:v1:*'; do
+        docker exec redis_server sh -c "redis-cli --scan --pattern '$pattern' | xargs -r redis-cli del" >/dev/null
+    done
+fi
+
+# 좋아요→취소 짝이 고를 보드. 짝을 보내도 지워지지 않는 보드만 고른다(lib/boards.js 머리말).
+export BOARD_IDS_FILE="$PWD/$OUT_DIR/boards.json"
+$PG "SELECT json_agg(id ORDER BY id) FROM board
+      WHERE deleted_at IS NULL AND (board_type = 'USER_CUSTOM' OR like_count >= 2)" > "$BOARD_IDS_FILE"
+echo "좋아요 대상 보드: $(python3 -c "import json,sys;print(len(json.load(open(sys.argv[1]))))" "$BOARD_IDS_FILE")개"
 
 # 그 단계에서 DB 시간을 가장 많이 쓴 쿼리. 부하 중에는 백분위가 없어 평균과 총합 비중으로 본다.
 dump_pgss() {
@@ -66,7 +94,7 @@ run_step() {
         summary=$(mktemp -t k6sum)
     fi
     k6 run --quiet -e RATE="$rate" -e DURATION="$duration" -e TOKENS_FILE="$TOKENS_FILE" -e SKIP_AI="${SKIP_AI:-0}" \
-        -e MIN_BOARD_ID="$MIN_BOARD_ID" -e MAX_BOARD_ID="$MAX_BOARD_ID" \
+        -e BOARD_IDS_FILE="$BOARD_IDS_FILE" \
         --summary-export="$summary" "$SCENARIO" \
         > "${OUT_DIR}/${tag:-warmup}.log" 2>&1 || true
     if [ -n "$sampler_pid" ]; then kill "$sampler_pid" 2>/dev/null || true; wait "$sampler_pid" 2>/dev/null || true; fi
@@ -76,11 +104,14 @@ run_step() {
 # 단계 결과 한 줄: "달성률 p50 p95 p99 실패% 누락% 통과여부 목표p95"
 #   혼합 시나리오(mixed)는 엔드포인트마다 목표가 따로 걸려 있다. 그때는 하나라도 넘으면 실패이고,
 #   표의 p50~p99는 전체 요청 기준, 목표 칸은 '엔드포인트별'이다. 엔드포인트별 값은 $4 파일에 남긴다.
+#   좋아요→취소처럼 반복 한 번에 요청을 여러 개 보내는 개별 시나리오도 이름별로 판정한다. 그때 도착률은 반복(쌍) 수라
+#   달성률도 반복 수로 센다. 혼합은 도착률이 요청 수라 요청 수로 센다($5).
 judge() {
-    python3 - "$1" "$2" "$3" "$4" <<'PY'
+    python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
 import json, re, sys
 m = json.load(open(sys.argv[1]))['metrics']
 rate, seconds, detail = float(sys.argv[2]), float(sys.argv[3].rstrip('s')), sys.argv[4]
+per_request = sys.argv[5] == 'mixed'
 def target_of(metric):
     return next((float(re.search(r'<(\d+)', k).group(1)) for k in metric.get('thresholds', {}) if 'p(95)' in k), None)
 base = m.get('api_duration', {})
@@ -88,10 +119,13 @@ subs = {k[len('api_duration{name:'):-1]: v for k, v in m.items() if k.startswith
 dropped = m.get('dropped_iterations', {}).get('count', 0)
 failed = m.get('api_failed', {}).get('value', 1.0) * 100
 if subs:
-    # 혼합: 요청 수 기준. like_toggle은 반복 1번에 요청 2개라 iterations로 세면 어긋난다.
-    # Trend는 요약에 개수가 없어(summaryTrendStats에 count를 넣지 않으면) Rate인 api_failed의 통과+실패로 센다.
+    # 이름별 판정(혼합, 좋아요→취소 짝). 혼합은 요청 수 기준 — like·unlike는 반복 1번에 요청 2개라 iterations로 세면
+    # 어긋난다. 요청 수는 Rate인 api_failed의 통과+실패로 센다. 개별 짝 시나리오는 도착률이 반복 수라 iterations로 센다.
     failed_metric = m.get('api_failed', {})
-    done = failed_metric.get('passes', 0) + failed_metric.get('fails', 0)
+    if per_request:
+        done = failed_metric.get('passes', 0) + failed_metric.get('fails', 0)
+    else:
+        done = m.get('iterations', {}).get('count', 0)
     ok_targets = all(v.get('p(95)', float('inf')) < target_of(v) for v in subs.values())
     with open(detail, 'w') as f:
         f.write(f"{'엔드포인트':16} {'요청/s':>7} {'p50':>6} {'p95':>6} {'p99':>6} {'목표':>6}  판정\n")
@@ -149,7 +183,7 @@ for rate in "${RATES[@]}"; do
     $PG "SELECT pg_stat_statements_reset()" >/dev/null 2>&1 || true
     run_step "$rate" "$DURATION" "rate$rate"
     dump_pgss "$OUT_DIR/rate$rate-pgss.txt"
-    read -r got p50 p95 p99 failed dropped verdict target <<<"$(judge "$OUT_DIR/rate$rate.json" "$rate" "$DURATION" "$OUT_DIR/rate$rate-endpoints.txt")"
+    read -r got p50 p95 p99 failed dropped verdict target <<<"$(judge "$OUT_DIR/rate$rate.json" "$rate" "$DURATION" "$OUT_DIR/rate$rate-endpoints.txt" "$NAME")"
     read -r c_be c_pg c_qd c_k6 pend q_mem <<<"$(step_peaks "$OUT_DIR/rate$rate.csv")"
     printf '%7s %8s %6s %6s %6s %6s %6s  %-4s  %s/%s/%s/%s · %s · %s\n' \
         "$rate" "$got" "$p50" "$p95" "$p99" "$failed" "$dropped" "$verdict" "$c_be" "$c_pg" "$c_qd" "$c_k6" "$pend" "$q_mem"

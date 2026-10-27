@@ -64,9 +64,13 @@ export function standard({ vus, iterations, p95 = 2000 }) {
  * 응답 시간은 http_req_duration이 아니라 lib/metrics.js의 api_duration으로 본다. setup에서 준비용으로
  * 보내는 요청(api-content-detail의 콘텐츠 요약 300번 등)이 http_req_duration에 섞이기 때문이다.
  *
- * @param p95  목표 p95(ms). 넘으면 threshold 실패로 기록된다
+ * 반복 한 번에 요청을 여러 개 보내는 시나리오(좋아요→취소)는 targets로 요청마다 목표를 따로 건다.
+ * 요청을 record(res, { name })로 기록하면 run-sweep.sh가 이름별 p95를 따로 판정한다. 도착률(RATE)은 반복 수다.
+ *
+ * @param p95      목표 p95(ms). 넘으면 threshold 실패로 기록된다
+ * @param targets  { 이름: 목표 p95(ms) } — 요청마다 따로 판정할 때
  */
-export function arrival({ p95 }) {
+export function arrival({ p95, targets }) {
   const rate = Number(__ENV.RATE || 10);
   return {
     scenarios: {
@@ -82,10 +86,13 @@ export function arrival({ p95 }) {
       },
     },
     thresholds: {
-      api_duration: [`p(95)<${p95}`],
+      ...(targets
+        ? Object.fromEntries(Object.entries(targets).map(([name, ms]) => [`api_duration{name:${name}}`, [`p(95)<${ms}`]]))
+        : { api_duration: [`p(95)<${p95}`] }),
       api_failed: ['rate<0.01'],
     },
     setupTimeout: '180s',
-    summaryTrendStats: ['avg', 'min', 'med', 'p(95)', 'p(99)', 'max'],
+    // count가 있어야 run-sweep.sh가 이름별 요청 수를 적는다.
+    summaryTrendStats: ['count', 'avg', 'min', 'med', 'p(95)', 'p(99)', 'max'],
   };
 }

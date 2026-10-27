@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -17,13 +18,13 @@ import java.util.Optional;
  *
  * <h2>왜</h2>
  *
- * <p>추천 1건은 Qdrant 검색을 최대 5번 한다(콘텐츠 1번 + 보드 제목 묶음 검색). 부하 측정에서 최대 처리량을 정한 것은
+ * <p>추천 1건은 Qdrant 검색을 2번 한다(제목 후보 200개 + 보드 4장의 콘텐츠 묶음 검색). 부하 측정에서 최대 처리량을 정한 것은
  * 언제나 Qdrant CPU였다. 추천은 취향 벡터가 바뀔 때만 달라지고, 취향 벡터는 좋아요 뒤 재계산 때만 바뀐다 —
  * 그 사이에 홈에 다시 들어오면 같은 계산을 반복한다. 브라우저 캐시(React Query, 30초)는 새로고침·재접속에는 소용이 없다.</p>
  *
  * <h2>무엇을 담나</h2>
  *
- * <p>Qdrant에서 얻은 것만 담는다: 추천 콘텐츠 id(순서 그대로), 보드별 제목(query), 계산에 쓴 취향 벡터의 버전.
+ * <p>Qdrant에서 얻은 것만 담는다: 추천 콘텐츠 id(보드 순서대로), 보드별 제목(query), 계산에 쓴 취향 벡터의 버전.
  * 보드 저장 여부·좋아요 수·내 좋아요 여부·콘텐츠 요약은 담지 않는다 — 계속 바뀌는 값이라 매번 PostgreSQL에서 읽는다.
  * 그래서 좋아요 상태는 늘 최신이다.</p>
  *
@@ -33,6 +34,9 @@ import java.util.Optional;
  * 없는 것으로 본다. 지우기를 빠뜨려 낡은 추천이 나갈 길이 없다. TTL은 버전 비교가 놓친 경우를 위한 안전망이다.</p>
  *
  * <p>Redis가 응답하지 않으면 오류를 올리지 않고 없는 것으로 본다. 추천은 지금처럼 Qdrant에서 계산해 나간다.</p>
+ *
+ * <p>{@code recommendation.cache.enabled=false}면 읽지도 쓰지도 않는다. 부하 테스트의 API 개별 측정이 끈다 —
+ * 같은 계정이 반복해 부르면 첫 요청 뒤로는 캐시만 재게 되어 추천 계산의 비용이 보이지 않는다.</p>
  */
 @Slf4j
 @Component
@@ -47,14 +51,17 @@ public class RecommendationCache {
 
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
+    private final boolean enabled;
     private final Counter hits;
     private final Counter misses;
     private final Counter errors;
 
-    public RecommendationCache(StringRedisTemplate redis, ObjectMapper objectMapper, MeterRegistry registry)
+    public RecommendationCache(StringRedisTemplate redis, ObjectMapper objectMapper, MeterRegistry registry,
+                               @Value("${recommendation.cache.enabled}") boolean enabled)
     {
         this.redis = redis;
         this.objectMapper = objectMapper;
+        this.enabled = enabled;
         this.hits = counter(registry, "hit");
         this.misses = counter(registry, "miss");
         this.errors = counter(registry, "error");
@@ -71,6 +78,10 @@ public class RecommendationCache {
     /** 이 버전의 취향 벡터로 계산해 둔 결과. 없거나 버전이 다르면 빈 값. */
     public Optional<Entry> get(Long userId, String vectorVersion)
     {
+        if (!enabled)
+        {
+            return Optional.empty();
+        }
         try
         {
             String json = redis.opsForValue().get(KEY_PREFIX + userId);
@@ -96,6 +107,10 @@ public class RecommendationCache {
 
     public void put(Long userId, Entry entry)
     {
+        if (!enabled)
+        {
+            return;
+        }
         try
         {
             redis.opsForValue().set(KEY_PREFIX + userId, objectMapper.writeValueAsString(entry), TTL);

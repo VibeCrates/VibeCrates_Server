@@ -130,6 +130,12 @@ board-mix:
   music: 2
   movie: 2
 
+# 홈 추천 결과 캐시(Redis reco:v1:{userId}, RecommendationCache). 취향 벡터가 바뀔 때까지 같은 결과를 내준다.
+# 부하 테스트의 API 개별 측정은 끈다(docker-compose.loadtest.yml의 CACHE_ENABLED) — 요청마다 실제 계산을 거치게.
+recommendation:
+  cache:
+    enabled: true
+
 # ✅ 4. Qdrant 연결 설정 (커스텀 설정)
 ai:
   vectorstore:

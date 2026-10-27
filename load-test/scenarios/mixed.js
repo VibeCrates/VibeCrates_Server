@@ -10,7 +10,10 @@
 //   검색 보드(AI 서버 경유)                                       → 6%
 //   좋아요·취소(요청 2개 = 한 쌍)                                 → 20% (쌍으로는 10%)
 //
-// 판정 — 엔드포인트마다 목표 p95를 따로 건다. 검색 보드만 1.5초, 나머지는 500ms.
+// 캐시 — 혼합 측정은 Redis 캐시(홈 추천 결과, 검색어 임베딩)를 켜고 잰다. 운영에서는 좋아요를 눌러야 홈 추천이
+// 바뀌므로 캐시를 거치는 것이 실제 모습이다. run-sweep.sh가 캐시가 켜져 있는지 확인하고, 시작할 때 캐시를 비운다.
+//
+// 판정 — 엔드포인트마다 목표 p95를 따로 건다. 검색 보드만 1.5초, 나머지는 500ms. 좋아요·취소는 like·unlike로 따로 본다.
 // 하나라도 넘으면 그 단계는 실패다. 엔드포인트별 값은 run-sweep.sh가 rateN-endpoints.txt로 남긴다.
 import { record } from '../lib/metrics.js';
 import { anyToken, pick } from '../lib/users.js';
@@ -19,16 +22,14 @@ import { KEYWORDS } from '../lib/keywords.js';
 import { nextSearchKeyword } from '../lib/search-keywords.js';
 // 시나리오 함수 이름(popular, archive)과 겹치지 않게 api로 묶어 가져온다. k6의 exec는 내보낸 함수 이름을 찾는다.
 import * as api from '../lib/api.js';
+import { pickBoardId } from '../lib/boards.js';
 
 const RATE = Number(__ENV.RATE || 50);
 const DURATION = __ENV.DURATION || '60s';
 const MAX_CONTENT_ID = api.MAX_CONTENT_ID;
-// 보드 id 범위는 run-sweep.sh가 DB에서 읽어 넘긴다. prepare.sh로 다시 만들면 시퀀스가 이어져 1부터 시작하지 않는다.
-const MIN_BOARD_ID = Number(__ENV.MIN_BOARD_ID || 1);
-const MAX_BOARD_ID = Number(__ENV.MAX_BOARD_ID || 250800);
 const LONG_KEYWORDS = KEYWORDS.filter((k) => [...k].length >= 3);
 
-// 이름: [요청 비율, 목표 p95(ms), 한 번에 보내는 요청 수]
+// 이름: [요청 비율, 목표 p95(ms), 한 번에 보내는 요청 수, 따로 판정할 요청 이름(없으면 시나리오 이름 하나)]
 const SHARES = {
   recommend:       [0.14, 500, 1],
   popular:         [0.14, 500, 1],
@@ -37,7 +38,7 @@ const SHARES = {
   archive:         [0.08, 500, 1],
   content_search:  [0.08, 500, 1],
   search_board:    [0.06, 1500, 1],
-  like_toggle:     [0.20, 500, 2],
+  like_toggle:     [0.20, 500, 2, ['like', 'unlike']],
 };
 
 // AI 서버가 꺼져 있으면 SKIP_AI=1로 검색 보드를 뺀다. 나머지 비율을 합이 1이 되게 늘려 전체 RATE는 그대로 둔다.
@@ -62,8 +63,8 @@ function scenario(name, [rawShare, , requests]) {
 }
 
 const thresholds = { api_failed: ['rate<0.01'] };
-for (const [name, [, p95]] of Object.entries(SHARES)) {
-  thresholds[`api_duration{name:${name}}`] = [`p(95)<${p95}`];
+for (const [name, [, p95, , recorded = [name]]] of Object.entries(SHARES)) {
+  for (const r of recorded) thresholds[`api_duration{name:${r}}`] = [`p(95)<${p95}`];
 }
 
 export const options = {
@@ -102,7 +103,7 @@ export function content_detail({ contents }) {
 }
 export function like_toggle() {
   const token = pick();
-  const boardId = MIN_BOARD_ID + Math.floor(Math.random() * (MAX_BOARD_ID - MIN_BOARD_ID + 1));
-  record(api.likeBoard(token, boardId), tag('like_toggle'));
-  record(api.unlikeBoard(token, boardId), tag('like_toggle'));
+  const boardId = pickBoardId();
+  record(api.likeBoard(token, boardId), tag('like'));
+  record(api.unlikeBoard(token, boardId), tag('unlike'));
 }
