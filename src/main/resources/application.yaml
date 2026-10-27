@@ -87,7 +87,6 @@ spring:
 
 
 
-# reids, elasticSearch 아직 docker에 없어서 발생하는 에러 생략
 management:
   # 기본값은 health만 열려 있어서 metrics를 명시해야 crates.user.vector.* 를 읽을 수 있다.
   # SecurityConfig가 anyRequest().authenticated()라 actuator도 JWT가 필요하다.
@@ -121,8 +120,6 @@ management:
   health:
     redis:
       enabled: true
-    elasticsearch:
-      enabled: false
 
 
 # 즉석에서 만드는 보드(홈 추천 보드, 검색 보드) 한 장에 담을 콘텐츠 종류별 개수(BoardContentMix). 합이 보드 크기(8)여야 한다.
@@ -230,13 +227,6 @@ storage:
   access-key: ${STORAGE_ACCESS_KEY}
   secret-key: ${STORAGE_SECRET_KEY}
 
-
-# ---------------------------------
-  # ✅ 5. Elasticsearch (전문 검색 엔진)
-# ---------------------------------
-#  elasticsearch:
-#    uris: http://localhost:9200
-    # xpack 보안을 false로 했으므로 username/password 생략
 
 # ---------------------------------
 # 로깅 수준 설정
