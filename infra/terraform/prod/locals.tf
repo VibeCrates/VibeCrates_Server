@@ -33,6 +33,8 @@ locals {
     NAVER_CLIENT_ID      = "${local.ssm_prefix}/oauth/naver-client-id"
     NAVER_CLIENT_SECRET  = "${local.ssm_prefix}/oauth/naver-client-secret"
     QDRANT_API_KEY       = "${local.ssm_prefix}/qdrant-api-key"
+    # 검색 보드 좋아요 토큰의 서명 키(SearchLikeTokenService)
+    SEARCH_LIKE_TOKEN_SECRET = "${local.ssm_prefix}/search-like-token-secret"
   }
 
   qdrant_api_key_param     = "${local.ssm_prefix}/qdrant-api-key"
