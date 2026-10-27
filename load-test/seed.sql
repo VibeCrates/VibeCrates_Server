@@ -15,16 +15,20 @@
 --           나머지는 새 AI 추천 보드에 누른다. 추천 보드는 좋아요를 눌러야 DB에 저장되므로
 --           "새 AI 보드에 누른 좋아요 1번 = AI 보드 1개"다.
 --   수정    하루 :edits_per_day 번. 보드의 콘텐츠를 하나만 바꿔도 "내가 만든 보드"가 된다.
+--   검색    하루 :search_likes_per_day 번 검색 결과에 좋아요를 누른다(검색 2번 중 1번). 검색 보드도 좋아요를
+--           눌러야 저장되므로 "검색 좋아요 1번 = 검색 보드(SEARCH_RECOMMEND) 1개"다. 검색 자체는 DB에 남지 않는다.
+--           검색 보드는 모두 서로 다른 (검색어, 구성)이라고 본다 — 인기 검색어에 좋아요가 모이는 실제보다 많은 상한이다.
 --   인기    인기 보드 좋아요는 지프 분포(:zipf_s). 순위 r인 보드가 1/r^s 에 비례해 받는다.
 --
--- 기본값(3 / 1 / 0.6 / 1.0)이면
---   계정 1,200 / AI 보드 136,800 / 사용자 보드 114,000 / board_item 2,006,400 / 좋아요 342,000
+-- 기본값(3 / 1 / 0.6 / 1.0 / 1)이면
+--   계정 1,200 / AI 보드 136,800 / 검색 보드 114,000 / 사용자 보드 114,000 / board_item 2,918,400 / 좋아요 456,000
 --
 -- psql 변수
 --   :likes_per_day   하루 좋아요 수
 --   :edits_per_day   하루 보드 수정 수
 --   :popular_ratio   좋아요 중 인기 보드로 가는 비율 (0~1)
 --   :zipf_s          인기 보드 지프 분포의 s (클수록 위쪽에 몰린다)
+--   :search_likes_per_day  하루 검색 좋아요 수 (= 하루 새 검색 보드 수)
 --
 -- 전제: loadtest_seed 계정과 그 취향 벡터가 미리 있어야 한다(비밀번호 해시와 취향 벡터를 복사한다).
 --       seed.sh가 계정은 SQL(pgcrypto)로, 취향 벡터는 가입 직후 콘텐츠 선택 API로 만든다.
@@ -43,7 +47,7 @@ SELECT setseed(0.2026) \g /dev/null
 CREATE TEMP TABLE cohort (month int PRIMARY KEY, new_users int NOT NULL) ON COMMIT DROP;
 INSERT INTO cohort VALUES (1, 100), (2, 100), (3, 300), (4, 300), (5, 200), (6, 200);
 
--- 사용자마다 만들 양을 정한다. 좋아요 = 새 AI 보드(ai_n) + 인기 보드(pop_n).
+-- 사용자마다 만들 양을 정한다. 좋아요 = 새 AI 보드(ai_n) + 새 검색 보드(search_n) + 인기 보드(pop_n).
 CREATE TEMP TABLE plan_user ON COMMIT DROP AS
 SELECT (row_number() OVER (ORDER BY c.month, g) - 1)::int AS ui,
        c.month,
@@ -52,9 +56,10 @@ FROM cohort c
 CROSS JOIN LATERAL generate_series(1, c.new_users) g;
 
 ALTER TABLE plan_user
-    ADD COLUMN ai_n int, ADD COLUMN pop_n int, ADD COLUMN custom_n int, ADD COLUMN user_id bigint;
+    ADD COLUMN ai_n int, ADD COLUMN pop_n int, ADD COLUMN search_n int, ADD COLUMN custom_n int, ADD COLUMN user_id bigint;
 UPDATE plan_user
    SET ai_n     = round(days * :likes_per_day * (1 - :popular_ratio))::int,
+       search_n = round(days * :search_likes_per_day)::int,
        custom_n = round(days * :edits_per_day)::int;
 UPDATE plan_user SET pop_n = days * :likes_per_day - ai_n;
 
@@ -62,10 +67,11 @@ UPDATE plan_user SET pop_n = days * :likes_per_day - ai_n;
 CREATE TEMP TABLE seed_expect AS
 SELECT count(*)                              AS users,
        sum(ai_n)                             AS ai_boards,
+       sum(search_n)                         AS search_boards,
        sum(custom_n)                         AS custom_boards,
-       (sum(ai_n) + sum(custom_n)) * 8       AS items,
-       sum(ai_n + pop_n)                     AS likes,
-       max(ai_n + pop_n)                     AS max_user_likes,
+       (sum(ai_n) + sum(search_n) + sum(custom_n)) * 8 AS items,
+       sum(ai_n + search_n + pop_n)          AS likes,
+       max(ai_n + search_n + pop_n)          AS max_user_likes,
        max(custom_n)                         AS max_user_boards
 FROM plan_user;
 
@@ -97,7 +103,7 @@ CROSS JOIN (SELECT uv.user_vector, uv.initial_content_ids FROM user_vector uv
             JOIN users b ON b.id = uv.user_id WHERE b.login_id = 'loadtest_seed') s;
 
 -- ── 보드 계획 ───────────────────────────────────────────────────────────
--- 보드마다 만든 시각을 그 사용자의 이용 기간 안에서 무작위로 정한다. AI 보드는 그 시각에
+-- 보드마다 만든 시각을 그 사용자의 이용 기간 안에서 무작위로 정한다. AI·검색 보드는 그 시각에
 -- 사용자가 좋아요를 눌러 저장된 것이고, 사용자 보드는 그 시각에 수정해 만든 것이다.
 -- k는 만든 시각 순서다. 보드를 이 순서로 넣어 id와 힙 위치가 시간 순서를 따르게 한다(실제 서비스와 같다).
 CREATE TEMP TABLE plan_board ON COMMIT DROP AS
@@ -106,13 +112,16 @@ FROM (
     SELECT 'AI' AS kind, p.user_id AS actor, now() - random() * (p.days || ' days')::interval AS created_at
     FROM plan_user p CROSS JOIN LATERAL generate_series(1, p.ai_n)
     UNION ALL
+    SELECT 'SEARCH', p.user_id, now() - random() * (p.days || ' days')::interval
+    FROM plan_user p CROSS JOIN LATERAL generate_series(1, p.search_n)
+    UNION ALL
     SELECT 'CUSTOM', p.user_id, now() - random() * (p.days || ' days')::interval
     FROM plan_user p CROSS JOIN LATERAL generate_series(1, p.custom_n)
 ) t;
 
 ALTER TABLE plan_board ADD COLUMN title text;
 UPDATE plan_board
-   SET title = CASE kind WHEN 'AI' THEN 'loadtest-seeded-' ELSE 'loadtest-custom-' END || k;
+   SET title = CASE kind WHEN 'AI' THEN 'loadtest-seeded-' WHEN 'SEARCH' THEN 'loadtest-search-' ELSE 'loadtest-custom-' END || k;
 CREATE UNIQUE INDEX ON plan_board (k);
 
 -- ── 보드 콘텐츠 ─────────────────────────────────────────────────────────
@@ -148,10 +157,11 @@ SELECT k, string_agg(content_id::text, ',' ORDER BY content_id) AS signature, co
 FROM plan_item GROUP BY k;
 
 -- ── 보드 ────────────────────────────────────────────────────────────────
--- AI 보드는 소유자가 없다. 사용자 보드는 공개로 만든다 — 앱이 사용자 보드를 만들 때의 기본값이다.
+-- AI·검색 보드는 소유자가 없다. 검색 보드의 제목은 검색어인데, 서로 다른 검색어라는 가정이라 보드마다 다른 문자열을 쓴다.
+-- 사용자 보드는 공개로 만든다 — 앱이 사용자 보드를 만들 때의 기본값이다.
 INSERT INTO board (user_id, board_type, visibility, title, content_signature, like_count, created_at)
-SELECT CASE b.kind WHEN 'AI' THEN NULL ELSE b.actor END,
-       CASE b.kind WHEN 'AI' THEN 'AI_RECOMMEND' ELSE 'USER_CUSTOM' END,
+SELECT CASE b.kind WHEN 'CUSTOM' THEN b.actor END,
+       CASE b.kind WHEN 'AI' THEN 'AI_RECOMMEND' WHEN 'SEARCH' THEN 'SEARCH_RECOMMEND' ELSE 'USER_CUSTOM' END,
        'PUBLIC', b.title, s.signature, 0, b.created_at
 FROM plan_board b JOIN plan_sig s USING (k)
 WHERE s.n = 8
@@ -171,14 +181,14 @@ ORDER BY m.board_id, i.slot;
 -- ── 좋아요 ──────────────────────────────────────────────────────────────
 CREATE TEMP TABLE plan_like (board_id bigint, user_id bigint, created_at timestamp) ON COMMIT DROP;
 
--- ① 새 AI 보드를 만든 좋아요. 그 보드를 만든 시각에 그 사용자가 누른 것이다.
+-- ① 새 AI·검색 보드를 만든 좋아요. 그 보드를 만든 시각에 그 사용자가 누른 것이다.
 INSERT INTO plan_like
-SELECT board_id, actor, created_at FROM board_map WHERE kind = 'AI';
+SELECT board_id, actor, created_at FROM board_map WHERE kind IN ('AI', 'SEARCH');
 CREATE INDEX ON plan_like (user_id, board_id);
 
 -- ② 인기 보드에 누른 좋아요 — 지프 분포.
 --
--- 모든 보드(AI·사용자, 전부 공개)에 무작위로 인기 순위를 매긴다. 어떤 보드가 위에 오를지는
+-- 모든 보드(AI·검색·사용자, 전부 공개)에 무작위로 인기 순위를 매긴다. 어떤 보드가 위에 오를지는
 -- 만든 시각과 상관없다. 쿼리 비용은 좋아요가 언제 달렸는지 보지 않으므로 결과가 같다.
 -- 시딩한 데이터는 "6개월 뒤의 최종 상태"라 그 안에서 순위가 움직이지 않는다. API 부하 테스트에서
 -- 좋아요가 오면 like_count가 올라 순위가 움직인다.
@@ -192,7 +202,7 @@ CREATE UNIQUE INDEX ON pop_rank (rnk);
 -- 같은 보드를 두 번 뽑으면 버린다 — 한 사람은 한 보드에 한 번만 누른다. 그래서 상위 보드는
 -- 거의 모든 사용자가 누른 상태(최대 1,200)가 되고, 그 아래로 긴 꼬리가 생긴다.
 -- 버리는 만큼을 채우려고 필요한 수의 2배 + 50번을 뽑고, 뽑힌 순서대로 필요한 만큼만 쓴다.
--- 자기가 이미 누른 보드(① 자기 AI 보드)도 뺀다.
+-- 자기가 이미 누른 보드(① 자기 AI·검색 보드)도 뺀다.
 WITH n AS (SELECT count(*)::float8 AS n FROM pop_rank),
 draw AS (
     SELECT p.user_id, p.pop_n, p.days, d AS seq,
@@ -240,11 +250,12 @@ COMMIT;
 ANALYZE users; ANALYZE user_vector; ANALYZE board; ANALYZE board_item; ANALYZE board_feedback;
 
 -- 셸이 파싱할 수 있도록 한 줄로 내보낸다. seed.sh가 기대값과 비교한다.
---   실제·기대 쌍(계정, AI 보드, 사용자 보드, board_item, 좋아요, 최다 사용자 좋아요, 최다 사용자 보드),
+--   실제·기대 쌍(계정, AI 보드, 검색 보드, 사용자 보드, board_item, 좋아요, 최다 사용자 좋아요, 최다 사용자 보드),
 --   분포(최다 좋아요 보드, 상위 100개 몫 %, 좋아요 2개 이상인 보드)
 SELECT
     (SELECT count(*) FROM users WHERE login_id LIKE 'loadtest_u%'),                         e.users,
     (SELECT count(*) FROM board WHERE title LIKE 'loadtest-seeded-%'),                      e.ai_boards,
+    (SELECT count(*) FROM board WHERE title LIKE 'loadtest-search-%'),                      e.search_boards,
     (SELECT count(*) FROM board WHERE title LIKE 'loadtest-custom-%'),                      e.custom_boards,
     (SELECT count(*) FROM board_item bi JOIN board b ON b.id = bi.board_id WHERE b.title LIKE 'loadtest-%'), e.items,
     (SELECT count(*) FROM board_feedback f JOIN users u ON u.id = f.user_id WHERE u.login_id LIKE 'loadtest_u%'), e.likes,
