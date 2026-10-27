@@ -65,9 +65,8 @@ public class SearchService {
     {
         String title = Board.normalizeTitle(keyword);
         QueryEmbedding query = getQueryEmbedding(title);
-        RecommendationService.SimilarContents similar =
+        List<ContentResponseDto> contents =
                 recommendationService.findSimilarByType(query.vector(), boardContentMix.perBoard(query.domain()));
-        List<ContentResponseDto> contents = similar.contents();
 
         if (contents.size() < Board.ITEMS_PER_BOARD)
         {

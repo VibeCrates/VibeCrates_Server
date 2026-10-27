@@ -11,7 +11,6 @@ import org.springframework.stereotype.Service;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
@@ -59,17 +58,17 @@ public class QueryVectorService {
     }
 
     /**
-     * 기준 벡터마다 가장 가까운 query를 한 번의 Qdrant 요청으로 찾는다. 결과는 입력 순서와 같고,
-     * 찾지 못한 자리는 빈 Optional이다. 벡터마다 따로 검색한다.
+     * 기준 벡터와 가까운 query를 limit개, 벡터와 함께 가까운 순으로 돌려준다. 홈 추천 보드의 제목 후보로 쓴다.
+     * 벡터는 후보끼리 얼마나 비슷한지 재는 데 쓴다(BoardTitleService.distinctTitlesNear).
      */
-    public List<Optional<QueryMatch>> findMostSimilarQueries(List<float[]> targetVectors) {
-        return pointOperations.searchBatch(collectionName, targetVectors, 1)
+    public List<QueryMatch> findSimilarQueries(float[] targetVector, int limit) {
+        return pointOperations.search(collectionName, targetVector, limit, true)
                 .stream()
-                .map(results -> results.stream().findFirst().map(this::toMatch))
+                .map(this::toMatch)
                 .toList();
     }
 
     private QueryMatch toMatch(ScoredPointResult result) {
-        return new QueryMatch(result.id(), (String) result.payload().get(VectorPayload.QUERY), result.score());
+        return new QueryMatch(result.id(), (String) result.payload().get(VectorPayload.QUERY), result.score(), result.vector());
     }
 }

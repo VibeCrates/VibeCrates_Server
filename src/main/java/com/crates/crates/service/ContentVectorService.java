@@ -13,9 +13,11 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
@@ -88,69 +90,68 @@ public class ContentVectorService {
     }
 
     /**
-     * 기준 벡터와 가까운 콘텐츠의 id와 벡터를 유사도 높은 순으로 돌려준다.
-     *
-     * <p>벡터를 함께 받는 이유는 보드 제목 때문이다. 제목은 보드에 담긴 콘텐츠의 평균 벡터와 가장 가까운
-     * query로 정하는데, 따로 retrieve하면 Qdrant 왕복이 한 번 늘어난다.</p>
-     */
-    /**
-     * 콘텐츠 종류마다 정해진 개수를 기준 벡터와 가까운 순으로 뽑는다(묶음 검색 한 번).
+     * 콘텐츠 종류마다 정해진 개수를 기준 벡터와 가까운 순으로 뽑는다(묶음 검색 한 번). 검색 보드가 쓴다.
      *
      * <p>콘텐츠 벡터는 종류별로 모여 있어서, 그냥 가까운 순으로 뽑으면 한 종류만 나오기 쉽다.
      * 종류마다 따로 걸러 검색해야 그 종류 안에서 가장 가까운 것을 확실히 얻는다 — 넉넉히 뽑아 고르는 방식은
      * 상위 수백 개 안에 어떤 종류가 아예 없을 수 있다.</p>
      *
-     * @return 뽑힌 콘텐츠를 종류가 번갈아 오도록 놓은 id → 벡터 ({@link #interleave} 참고)
+     * @return 뽑힌 콘텐츠 id를 종류가 번갈아 오도록 놓은 것 ({@link #interleave} 참고)
      */
-    public Map<Long, float[]> findSimilarByType(float[] targetVector, Map<String, Integer> countByType) {
+    public List<Long> findSimilarByType(float[] targetVector, Map<String, Integer> countByType) {
         List<List<ScoredPointResult>> byType = List.copyOf(
                 pointOperations.searchEachValue(collectionName, targetVector, VectorPayload.CONTENT_TYPE, countByType)
                         .values());
 
-        return interleave(byType).stream()
-                .collect(LinkedHashMap::new, (map, result) -> map.put(result.id(), result.vector()), Map::putAll);
+        return interleave(byType).stream().map(ScoredPointResult::id).toList();
     }
 
     /**
-     * 보드 여러 장 분량을 종류마다 한 번에 뽑아(묶음 검색 한 번) 보드마다 정해진 개수씩 나눠 담는다. 홈 추천 보드가 쓴다.
+     * 보드마다 자기 기준 벡터로 종류별 개수를 뽑되, 앞 보드에 담긴 콘텐츠는 다시 담지 않는다. 홈 추천 보드가 쓴다.
      *
-     * <p>종류마다 {@code 장당 개수 × 장 수}를 가까운 순으로 받아, 앞에서부터 장당 개수씩 끊어 1번 보드부터 채운다.
-     * 그래서 앞쪽 보드일수록 각 종류에서 취향에 더 가까운 콘텐츠가 들어간다. 보드 안에서는 {@link #interleave}로
-     * 종류가 번갈아 오게 놓는다.</p>
+     * <p>보드 수 × 종류 수만큼의 검색을 <b>한 번의 묶음 요청</b>으로 보낸다. 앞 보드의 결과를 보고 다음 보드를 검색하면
+     * 왕복이 보드 수만큼 순서대로 늘어나므로, 겹침은 받은 뒤 여기서 거른다({@link #pickDistinctBoards}).</p>
      *
-     * @return 보드 1번부터 차례로 이어 붙인 id → 벡터. 앞에서부터 보드 크기씩 끊으면 보드 한 장이다
+     * <p>그래서 종류마다 {@code 장당 개수 × 장 수}를 받는다. 마지막 보드라도 앞 보드들이 그 종류에서 가져간 것이
+     * {@code 장당 개수 × (장 수 − 1)}개를 넘지 않으므로, 겹친 것을 모두 빼도 장당 개수가 남는다.</p>
+     *
+     * @return 보드 순서대로 콘텐츠 id. 보드 안에서는 종류가 번갈아 온다
      */
-    public Map<Long, float[]> findSimilarBoardsByType(float[] targetVector, Map<String, Integer> perBoard, int boards) {
-        Map<String, Integer> total = new LinkedHashMap<>();
-        perBoard.forEach((type, count) -> total.put(type, count * boards));
+    public List<List<Long>> findDistinctBoardsByType(List<float[]> targetVectors, Map<String, Integer> perBoard) {
+        Map<String, Integer> fetch = new LinkedHashMap<>();
+        perBoard.forEach((type, count) -> fetch.put(type, count * targetVectors.size()));
 
-        Map<String, List<ScoredPointResult>> byType =
-                pointOperations.searchEachValue(collectionName, targetVector, VectorPayload.CONTENT_TYPE, total);
+        List<Map<String, List<ScoredPointResult>>> results =
+                pointOperations.searchEachValue(collectionName, targetVectors, VectorPayload.CONTENT_TYPE, fetch);
 
-        return splitIntoBoards(byType, perBoard, boards).stream()
-                .flatMap(board -> interleave(board).stream())
-                .collect(LinkedHashMap::new, (map, result) -> map.put(result.id(), result.vector()), Map::putAll);
+        return pickDistinctBoards(results, perBoard).stream()
+                .map(board -> board.stream().map(ScoredPointResult::id).toList())
+                .toList();
     }
 
     /**
-     * 종류별 결과(가까운 순)를 앞에서부터 장당 개수씩 끊어 보드 장마다 나눈다.
+     * 보드마다 종류별 결과(가까운 순)에서 앞 보드에 없는 것을 장당 개수만큼 앞에서부터 골라, 종류가 번갈아 오게 놓는다.
      *
-     * @return 보드마다 종류별 결과 목록
+     * @param resultsPerBoard 보드마다 종류별 검색 결과
+     * @return 보드 순서대로 고른 콘텐츠. 결과가 모자란 종류가 있으면 그 보드는 장당 합보다 짧다
      */
-    static List<List<List<ScoredPointResult>>> splitIntoBoards(Map<String, List<ScoredPointResult>> byType,
-                                                              Map<String, Integer> perBoard, int boards) {
-        List<List<List<ScoredPointResult>>> result = new ArrayList<>(boards);
-        for (int board = 0; board < boards; board++) {
+    static List<List<ScoredPointResult>> pickDistinctBoards(List<Map<String, List<ScoredPointResult>>> resultsPerBoard,
+                                                           Map<String, Integer> perBoard) {
+        Set<Long> used = new HashSet<>();
+        List<List<ScoredPointResult>> boards = new ArrayList<>(resultsPerBoard.size());
+        for (Map<String, List<ScoredPointResult>> byType : resultsPerBoard) {
             List<List<ScoredPointResult>> parts = new ArrayList<>(perBoard.size());
             for (Map.Entry<String, Integer> entry : perBoard.entrySet()) {
-                List<ScoredPointResult> results = byType.getOrDefault(entry.getKey(), List.of());
-                int from = Math.min(board * entry.getValue(), results.size());
-                int to = Math.min(from + entry.getValue(), results.size());
-                parts.add(results.subList(from, to));
+                parts.add(byType.getOrDefault(entry.getKey(), List.of()).stream()
+                        .filter(result -> !used.contains(result.id()))
+                        .limit(entry.getValue())
+                        .toList());
             }
-            result.add(parts);
+            List<ScoredPointResult> board = interleave(parts);
+            board.forEach(result -> used.add(result.id()));
+            boards.add(board);
         }
-        return result;
+        return boards;
     }
 
     /**
