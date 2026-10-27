@@ -1,4 +1,4 @@
-// 홈 추천 보드의 좋아요 → 취소. 아직 저장되지 않은 추천 보드에 좋아요를 누르면 그때 AI 보드로 저장되고
+// 홈 추천 보드의 좋아요 → 취소. 추천 응답의 likeToken(서버가 서명한 제목·구성)으로 좋아요를 누르면 그때 AI 보드로 저장되고
 // (INSERT ... ON CONFLICT DO NOTHING), 취소로 좋아요가 0개가 되면 완전히 지워진다(콘텐츠 → 보드).
 // 그래서 한 쌍이 끝나면 데이터가 원래대로 돌아온다. 응답 시간은 좋아요(recommend_like)와 취소(unlike)를 따로 판정한다.
 //
@@ -25,7 +25,7 @@ export function setup() {
     }
     for (const board of res.json('data')) {
       if (board.liked) continue;
-      boards.push({ token, title: board.title, contentIds: board.contents.map((c) => c.id) });
+      boards.push({ token, likeToken: board.likeToken });
     }
   }
   if (boards.length === 0) throw new Error('좋아요할 추천 보드가 없습니다');
@@ -34,7 +34,7 @@ export function setup() {
 
 export default function ({ boards }) {
   const board = boards[exec.scenario.iterationInTest % boards.length];
-  const liked = record(likeRecommendedBoard(board.token, board.title, board.contentIds), { name: 'recommend_like' });
+  const liked = record(likeRecommendedBoard(board.token, board.likeToken), { name: 'recommend_like' });
   const boardId = liked.status === 200 ? liked.json('data.boardId') : null;
   if (boardId !== null) record(unlikeBoard(board.token, boardId), { name: 'unlike' });
 }

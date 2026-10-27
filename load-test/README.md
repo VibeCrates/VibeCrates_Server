@@ -314,7 +314,7 @@ KEEP_GOING=1 ./load-test/run-sweep.sh mixed 25 50 75 100 150               # 실
   | 시나리오 | 무엇을 | 따로 보는 요청 |
   |---|---|---|
   | `api-like-toggle` | 저장된 보드의 좋아요→취소. 보드는 짝을 보내도 지워지지 않는 것만 고른다(`lib/boards.js`) | `like`, `unlike` |
-  | `api-recommend-like` | 홈 추천 보드의 첫 좋아요(저장)→취소(완전 삭제). 추천은 setup에서 미리 받는다 | `recommend_like`, `unlike` |
+  | `api-recommend-like` | 홈 추천 보드의 첫 좋아요(토큰 검증·저장)→취소(완전 삭제). 추천은 setup에서 미리 받는다 | `recommend_like`, `unlike` |
   | `api-search-like` | 검색 보드의 첫 좋아요(토큰 검증·저장)→취소(완전 삭제). 검색은 setup에서 미리 한다 | `search_like`, `unlike` |
   AI 서버가 꺼져 있으면 `SKIP_AI=1`로 검색 보드를 빼고 나머지 비율을 늘려 잰다.
 - **로그인은 측정 밖에서** — `lib/tokens.sh`가 계정 200개(6명마다 1명, 가입 시기 분포 유지)로 미리 로그인한다.
