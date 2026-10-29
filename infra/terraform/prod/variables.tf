@@ -111,7 +111,7 @@ variable "redis_node_type" {
 # AI 서버가 AWS로 오면 tailscale_relay_enabled = false로 두고 ai_server_base_url만 바꾼다.
 variable "ai_server_base_url" {
   type    = string
-  default = "http://100.77.133.40:8000"
+  default = "http://100.115.172.111:8000"
 }
 
 variable "tailscale_relay_enabled" {
