@@ -26,7 +26,7 @@
 # api-search-like)는 좋아요→취소 짝이라 개수는 그대로다 — 새로 저장된 추천·검색 보드는 취소로 다시 지워진다.
 # 단계 사이에는 pg_stat_statements만 초기화한다.
 #
-# 캐시 — API 개별 측정(api-*)은 Redis 캐시를 끄고(CACHE_ENABLED=false로 띄운 backend), 혼합 측정(mixed)은 켜고 잰다
+# 캐시 — API 개별 측정(api-*)은 Redis 캐시를 끄고(CACHE_ENABLED=false로 띄운 backend), 혼합·화면 측정(mixed, screens)은 켜고 잰다
 # (docker-compose.loadtest.yml 머리말). 맞지 않으면 시작하지 않는다. 확인을 건너뛰려면 CACHE_CHECK=0.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -46,7 +46,7 @@ mkdir -p "$OUT_DIR"
 PG="docker exec -e PGPASSWORD=$POSTGRESQL_PASSWORD postgres_server psql -U $POSTGRESQL_USERNAME -d crates -t -A -c"
 
 # 캐시 상태 확인. 컨테이너 환경 변수에 없으면 application.yaml 기본값(켬)이다.
-[ "$NAME" = "mixed" ] && WANT_CACHE=true || WANT_CACHE=false
+[[ "$NAME" = "mixed" || "$NAME" = "screens" ]] && WANT_CACHE=true || WANT_CACHE=false
 CACHE_NOW=$(docker inspect backend_server --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null |
     sed -n 's/^RECOMMENDATION_CACHE_ENABLED=//p')
 CACHE_NOW="${CACHE_NOW:-true}"
@@ -106,6 +106,7 @@ run_step() {
 #   표의 p50~p99는 전체 요청 기준, 목표 칸은 '엔드포인트별'이다. 엔드포인트별 값은 $4 파일에 남긴다.
 #   좋아요→취소처럼 반복 한 번에 요청을 여러 개 보내는 개별 시나리오도 이름별로 판정한다. 그때 도착률은 반복(쌍) 수라
 #   달성률도 반복 수로 센다. 혼합은 도착률이 요청 수라 요청 수로 센다($5).
+#   화면 시나리오는 screen_duration의 count로 진입 수만 세고, 화면·API 목표를 모두 판정한다(행동 반복은 제외).
 judge() {
     python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
 import json, re, sys
@@ -114,25 +115,36 @@ rate, seconds, detail = float(sys.argv[2]), float(sys.argv[3].rstrip('s')), sys.
 per_request = sys.argv[5] == 'mixed'
 def target_of(metric):
     return next((float(re.search(r'<(\d+)', k).group(1)) for k in metric.get('thresholds', {}) if 'p(95)' in k), None)
-base = m.get('api_duration', {})
 subs = {k[len('api_duration{name:'):-1]: v for k, v in m.items() if k.startswith('api_duration{name:')}
+screens = {k[len('screen_duration{screen:'):-1]: v for k, v in m.items() if k.startswith('screen_duration{screen:')}
+base = m.get('screen_duration' if screens else 'api_duration', {})
 dropped = m.get('dropped_iterations', {}).get('count', 0)
 failed = m.get('api_failed', {}).get('value', 1.0) * 100
 if subs:
     # 이름별 판정(혼합, 좋아요→취소 짝). 혼합은 요청 수 기준 — like·unlike는 반복 1번에 요청 2개라 iterations로 세면
     # 어긋난다. 요청 수는 Rate인 api_failed의 통과+실패로 센다. 개별 짝 시나리오는 도착률이 반복 수라 iterations로 센다.
     failed_metric = m.get('api_failed', {})
-    if per_request:
+    if screens:
+        done = base.get('count', 0)
+    elif per_request:
         done = failed_metric.get('passes', 0) + failed_metric.get('fails', 0)
     else:
         done = m.get('iterations', {}).get('count', 0)
     ok_targets = all(v.get('p(95)', float('inf')) < target_of(v) for v in subs.values())
+    if screens:
+        ok_targets = ok_targets and all(v.get('count', 0) > 0 and v.get('p(95)', float('inf')) < target_of(v) for v in screens.values())
     with open(detail, 'w') as f:
         f.write(f"{'엔드포인트':16} {'요청/s':>7} {'p50':>6} {'p95':>6} {'p99':>6} {'목표':>6}  판정\n")
         for name, v in sorted(subs.items()):
             t = target_of(v); p95 = v.get('p(95)', float('inf'))
             f.write(f"{name:16} {v.get('count', 0) / seconds:7.1f} {v.get('med', 0):6.0f} {p95:6.0f} {v.get('p(99)', 0):6.0f} {t:6.0f}  {'통과' if p95 < t else '실패'}\n")
-    target = '엔드포인트별'
+        if screens:
+            f.write(f"\n{'화면':16} {'진입/s':>7} {'p50':>6} {'p95':>6} {'p99':>6} {'목표':>6}  판정\n")
+            for name, v in sorted(screens.items()):
+                t = target_of(v); p95 = v.get('p(95)', float('inf'))
+                passed = v.get('count', 0) > 0 and p95 < t
+                f.write(f"{name:16} {v.get('count', 0) / seconds:7.1f} {v.get('med', 0):6.0f} {p95:6.0f} {v.get('p(99)', 0):6.0f} {t:6.0f}  {'통과' if passed else '실패'}\n")
+    target = '화면·엔드포인트별' if screens else '엔드포인트별'
 else:
     # iterations.rate는 setup 시간까지 분모에 넣어 낮게 나온다. 단계 길이로 직접 나눈다.
     done = m.get('iterations', {}).get('count', 0)

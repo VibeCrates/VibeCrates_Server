@@ -189,3 +189,25 @@ export function contentSummary(token, contentId) {
     tags: { name: 'setup content summary' },
   });
 }
+
+/** 공통 로그인 가드. 앱을 처음 열 때 상태를 받은 뒤에 본문을 연다(프론트가 세션 동안 캐시). */
+export function onboardingStatus(token) {
+  return http.get(`${BASE}/api/users/me/onboarding`, {
+    ...auth(token),
+    tags: { name: 'GET /api/users/me/onboarding' },
+  });
+}
+
+/** 홈 본문이 함께 보내는 요청. 호출하지 않고 http.batch에 넘길 모양만 만든다. */
+export function homeRequests(token) {
+  const paths = {
+    recommend: ['/api/boards/recommendation/user', 'GET /api/boards/recommendation/user'],
+    popular: ['/api/boards/liked?n=8', 'GET /api/boards/liked'],
+    my_boards: ['/api/boards/mine?filter=ALL&page=0&size=8', 'GET /api/boards/mine'],
+  };
+  return Object.fromEntries(Object.entries(paths).map(([name, [path, label]]) => [name, {
+    method: 'GET',
+    url: `${BASE}${path}`,
+    params: { ...auth(token), tags: { name: label } },
+  }]));
+}
