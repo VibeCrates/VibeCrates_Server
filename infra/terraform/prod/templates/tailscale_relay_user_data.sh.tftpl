@@ -19,6 +19,8 @@ sysctl -p /etc/sysctl.d/99-forward.conf
 AUTH_KEY=$(aws ssm get-parameter --region ${region} --name "${auth_key_param}" --with-decryption \
   --query Parameter.Value --output text)
 tailscale up --authkey="$AUTH_KEY" --hostname="${hostname}" --accept-routes=false
+# 인터넷에 UDP 포트를 열어 두므로 tailscaled를 자동으로 최신으로 유지한다(처음 기동 때만 설치하면 그대로 낡는다).
+tailscale set --auto-update
 
 # 재부팅·정지 뒤에도 SNAT 규칙이 다시 걸리도록 서비스로 둔다.
 cat > /etc/systemd/system/vpc-to-tailnet-snat.service <<UNIT

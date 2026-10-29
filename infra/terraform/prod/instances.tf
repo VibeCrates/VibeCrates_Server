@@ -155,10 +155,14 @@ resource "aws_instance" "tailscale_relay" {
 
   ami = data.aws_ssm_parameter.al2023_arm64.value
   # nano(512MB)는 첫 기동 때 dnf가 저장소 메타데이터를 읽다 메모리 부족으로 죽는다(2026-10-23 첫 적용에서 확인).
-  instance_type          = "t4g.micro"
-  subnet_id              = aws_subnet.app[0].id
-  vpc_security_group_ids = [aws_security_group.tailscale_relay[0].id]
-  iam_instance_profile   = aws_iam_instance_profile.tailscale_relay[0].name
+  instance_type = "t4g.micro"
+  # 공개 서브넷에 공인 IP를 붙여 둔다. 사설 서브넷에서 NAT 게이트웨이로 나가면 NAT가 목적지마다 바깥 포트를 바꿔
+  # Tailscale이 AI 서버와 직접 연결을 뚫지 못하고 도쿄 DERP 중계를 거쳤다(2026-10-28: 임베딩 1건 약 0.2초, 직접이면 약 0.03초).
+  # 인터넷에서 들어오는 것은 Tailscale UDP 41641뿐이다(보안 그룹). WireGuard는 인증되지 않은 패킷에 응답하지 않는다.
+  subnet_id                   = var.tailscale_relay_public ? aws_subnet.public[0].id : aws_subnet.app[0].id
+  associate_public_ip_address = var.tailscale_relay_public
+  vpc_security_group_ids      = [aws_security_group.tailscale_relay[0].id]
+  iam_instance_profile        = aws_iam_instance_profile.tailscale_relay[0].name
 
   # 자기 주소가 아닌 패킷(backend → AI 서버)을 받아 넘겨야 하므로 출발지/목적지 확인을 끈다.
   source_dest_check = false
@@ -183,8 +187,11 @@ resource "aws_instance" "tailscale_relay" {
 
   tags = { Name = "${local.name}-tailscale-relay" }
 
+  # associate_public_ip_address: 정지하면 AWS가 자동 공인 IP를 회수해 Terraform이 false로 읽고, 이 속성은 바꾸면
+  # 교체라 env-down → env-up마다 relay를 새로 만들려 했다(2026-10-29 확인 — Tailscale에 새 장비로 다시 가입한다).
+  # 다시 켜면 AWS가 새 공인 IP를 붙이므로 무시한다. 공개/사설 전환(tailscale_relay_public)은 subnet_id가 바뀌어 여전히 교체된다.
   lifecycle {
-    ignore_changes = [ami]
+    ignore_changes = [ami, associate_public_ip_address]
   }
 }
 

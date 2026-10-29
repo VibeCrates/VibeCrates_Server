@@ -148,6 +148,18 @@ resource "aws_vpc_security_group_ingress_rule" "relay_from_backend" {
   referenced_security_group_id = aws_security_group.backend.id
 }
 
+# Tailscale 직접 연결(WireGuard). 공개 서브넷의 중계 EC2가 AI 서버와 DERP 중계 없이 바로 통신하도록 연다(instances.tf).
+resource "aws_vpc_security_group_ingress_rule" "relay_tailscale" {
+  count = var.tailscale_relay_enabled && var.tailscale_relay_public ? 1 : 0
+
+  security_group_id = aws_security_group.tailscale_relay[0].id
+  description       = "Tailscale direct (WireGuard)"
+  ip_protocol       = "udp"
+  from_port         = 41641
+  to_port           = 41641
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
 resource "aws_vpc_security_group_egress_rule" "relay_all" {
   count = var.tailscale_relay_enabled ? 1 : 0
 

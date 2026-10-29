@@ -114,6 +114,13 @@ variable "ai_server_base_url" {
   default = "http://100.77.133.40:8000"
 }
 
+# 중계 EC2를 공개 서브넷(공인 IP, AI 서버와 직접 연결)에 둘지, 사설 서브넷(NAT 게이트웨이 경유)에 둘지.
+# 사설이면 NAT가 목적지마다 바깥 포트를 바꿔 Tailscale이 직접 연결을 뚫지 못하고 DERP 중계를 거친다(instances.tf).
+variable "tailscale_relay_public" {
+  type    = bool
+  default = true
+}
+
 variable "tailscale_relay_enabled" {
   type    = bool
   default = true
