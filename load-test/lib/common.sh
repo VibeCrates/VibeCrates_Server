@@ -31,12 +31,21 @@ wait_ready() {
     # 예전에는 "Qdrant CPU가 20% 아래"로 판단했는데, 적재가 끝나고 인덱싱이 시작되기 전 CPU가 잠깐 내려간 순간을
     # 완료로 읽었다(2026-10-04: query_vector가 402,000/732,544만 인덱싱된 채 측정이 시작돼 추천 p95 27.8초).
     # 그래서 컬렉션 상태를 직접 본다. 모든 컬렉션이 green(최적화 끝)이어야 한다. 1코어 상한이면 수십 분까지 본다.
+    #
+    # grey는 "최적화가 남아 있지만 아직 시작되지 않음"이다. Qdrant 컨테이너를 다시 만든 뒤 인덱싱은 다 됐는데도
+    # grey로 남아 green이 되지 않았다(2026-10-28: query_vector 372,667/372,667 인덱싱, 30분 대기). 빈 설정 변경(PATCH)이
+    # 최적화를 다시 걸어 green으로 바꾼다. 데이터와 설정은 바뀌지 않는다.
     local status
     for _ in $(seq 1 360); do
         status=$(curl -s http://localhost:6333/collections | python3 -c "
 import json, sys, urllib.request
+base = 'http://localhost:6333/collections/'
 names = [c['name'] for c in json.load(sys.stdin)['result']['collections']]
-states = [json.load(urllib.request.urlopen(f'http://localhost:6333/collections/{n}'))['result']['status'] for n in names]
+states = [json.load(urllib.request.urlopen(base + n))['result']['status'] for n in names]
+for n, s in zip(names, states):
+    if s == 'grey':
+        urllib.request.urlopen(urllib.request.Request(base + n, data=b'{\"optimizers_config\":{}}', method='PATCH',
+                                                      headers={'Content-Type': 'application/json'}))
 print('green' if names and all(s == 'green' for s in states) else ','.join(f'{n}={s}' for n, s in zip(names, states)))
 " 2>/dev/null || echo unknown)
         [ "$status" = "green" ] && { echo "완료 (Qdrant 컬렉션 모두 green)"; return; }
