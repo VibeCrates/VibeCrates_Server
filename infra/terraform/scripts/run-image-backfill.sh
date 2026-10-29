@@ -19,7 +19,8 @@
 #   4. 원인별 실패 건수를 보여 주고 실패 목록 CSV를 내려받는다
 #
 # 다시 돌려도 된다. 이미지가 없는 콘텐츠만 대상이라 끊긴 곳부터 이어서 한다.
-# 전제: 환경이 켜져 있어야 한다(env-up.sh). 작업이 RDS에 붙고 NAT로 원본 이미지를 받는다.
+# 전제: RDS와 NAT가 켜져 있어야 한다. 작업이 RDS에 붙고 NAT로 원본 이미지를 받는다. ALB·ElastiCache·ECS 서비스는
+#       필요 없어, 환경을 끈 상태에서 RDS를 시작하고 NAT만 켜도 된다(terraform apply -target=aws_nat_gateway.main -target=aws_route.app_nat).
 set -euo pipefail
 
 [ $# -gt 0 ] || { echo "종류=CSV경로 를 하나 이상 넘겨야 합니다(예: music=.../music.csv)" >&2; exit 1; }
@@ -61,6 +62,9 @@ env = {
     "JOB_IMAGE_BACKFILL_ENABLED": "true",
     "SPRING_MAIN_WEB_APPLICATION_TYPE": "none",
     "SCHEDULER_ENABLED": "false",
+    # 환경을 끈 상태(active = false)의 작업 정의는 REDIS_HOST가 빈 값이라 앱이 기동하지 못한다('host' must not be empty).
+    # 이 작업은 Redis를 쓰지 않고 Lettuce는 쓸 때 연결하므로, 비어 있지만 않으면 된다. 켜진 상태에서도 이 작업만 덮어쓴다.
+    "REDIS_HOST": "localhost",
     "JOB_IMAGE_BACKFILL_TYPES": types,
     "JOB_IMAGE_BACKFILL_REPORT_LOCATION": f"s3://{ops}/{prefix}/failures.csv",
 }
