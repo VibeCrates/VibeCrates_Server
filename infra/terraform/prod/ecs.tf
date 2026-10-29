@@ -80,6 +80,27 @@ resource "aws_iam_role" "ecs_task" {
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
 }
 
+# ECS Exec — 실행 중인 backend 컨테이너 안에서 명령을 실행한다(aws ecs execute-command). 부하 측정 때 앱 지표
+# (/actuator — CloudFront 경로에 없어 밖에서 못 읽는다)를 컨테이너 안에서 읽어 캐시 적중률을 남기려고 켰다.
+# SSM 세션 채널이라 포트를 열지 않는다. 실행 기록은 CloudTrail에 남는다.
+resource "aws_iam_role_policy" "ecs_task_exec" {
+  name = "ecs-exec"
+  role = aws_iam_role.ecs_task.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "ssmmessages:CreateControlChannel",
+        "ssmmessages:CreateDataChannel",
+        "ssmmessages:OpenControlChannel",
+        "ssmmessages:OpenDataChannel",
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
 resource "aws_iam_role_policy" "ecs_task_images" {
   name = "images-bucket"
   role = aws_iam_role.ecs_task.id
@@ -176,6 +197,9 @@ resource "aws_ecs_service" "backend" {
   task_definition = aws_ecs_task_definition.backend.arn
   desired_count   = var.backend_desired_count
   launch_type     = "FARGATE"
+
+  # 컨테이너 안에서 앱 지표를 읽는다(위 ecs_task_exec). 켠 뒤 새로 뜬 작업부터 적용된다.
+  enable_execute_command = true
 
   network_configuration {
     subnets          = aws_subnet.app[*].id
