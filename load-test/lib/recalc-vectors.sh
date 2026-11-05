@@ -73,7 +73,7 @@ SELECT u.login_id, u.id, b.id
   FROM users u
   CROSS JOIN LATERAL (
         SELECT b.id FROM board b
-         WHERE b.board_type = 'AI_RECOMMEND' AND b.deleted_at IS NULL
+         WHERE b.board_type = 'TASTE_RECOMMEND' AND b.deleted_at IS NULL
            AND NOT EXISTS (SELECT 1 FROM board_feedback f WHERE f.board_id = b.id AND f.user_id = u.id)
          ORDER BY b.id LIMIT 1) b
  WHERE u.login_id LIKE 'loadtest_u%'

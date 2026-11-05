@@ -20,7 +20,7 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
     /**
      * 인기 보드 후보를 좋아요 많은 순으로 가져온다.
      *
-     * <p>순서는 좋아요 수 → 타입(USER_CUSTOM &gt; SEARCH_RECOMMEND &gt; AI_RECOMMEND) → id다.
+     * <p>순서는 좋아요 수 → 타입(USER_CUSTOM &gt; SEARCH_RECOMMEND &gt; TASTE_RECOMMEND) → id다.
      * 좋아요가 같으면 사람이 관여한 보드가 앞선다(docs/board-schema.md 11-7). 정렬 마지막에 id를 두는 이유는,
      * like_count가 초기에 0~2에 몰려 동률이 대량으로 생기기 때문이다. id가 없으면 SQL이
      * 동률 간 순서를 보장하지 않아 LIMIT 경계에서 어떤 보드가 잘리는지가 실행마다 달라지고,
@@ -45,23 +45,23 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
     List<Board> findPopularBoards(@Param("limit") int limit);
 
     /**
-     * 콘텐츠 구성이 같은 AI_RECOMMEND 보드를 찾는다.
+     * 콘텐츠 구성이 같은 TASTE_RECOMMEND 보드를 찾는다.
      *
-     * <p>AI_RECOMMEND(홈 추천 보드)는 소유자가 없는 전역 공용 보드다.
+     * <p>TASTE_RECOMMEND(홈 추천 보드)는 소유자가 없는 전역 공용 보드다.
      * 같은 구성이면 같은 보드로 취급해야 좋아요가 여러 행으로 갈라지지 않는다.
      * uk_board_ai_signature가 DB에서도 같은 규칙을 강제한다.</p>
      *
      * <p><b>board_type을 SQL에 상수로 박는다 — 그래서 네이티브다.</b> uk_board_ai_signature는
-     * {@code board_type = 'AI_RECOMMEND'}인 행만 담는 부분 인덱스다. Hibernate는 JPQL에 enum 값을 박아도
+     * {@code board_type = 'TASTE_RECOMMEND'}인 행만 담는 부분 인덱스다. Hibernate는 JPQL에 enum 값을 박아도
      * {@code board_type = ?}(바인드 파라미터)로 보내는데, 그러면 범용 실행 계획(값을 모르는 계획)은
-     * {@code ?}가 'AI_RECOMMEND'라고 증명할 수 없어 이 인덱스를 못 쓰고 board 전체를 훑는다
+     * {@code ?}가 'TASTE_RECOMMEND'라고 증명할 수 없어 이 인덱스를 못 쓰고 board 전체를 훑는다
      * (실측 2026-10-01, 보드 250,800: 8,163블록 / 11.4㎳ → 상수로 박으면 4블록 / 0.007㎳).
      * 예전에는 board_type을 컬럼으로 담은 인덱스(idx_board_signature_lookup, 24MB, 좋아요 1건당 WAL +32%)를
      * 따로 두어 막았는데, 쿼리가 부분 인덱스의 조건을 그대로 말하게 하면 그 인덱스가 필요 없다.</p>
      */
     @Query(value = """
             SELECT b.* FROM board b
-             WHERE b.board_type = 'AI_RECOMMEND' AND b.content_signature = :signature AND b.deleted_at IS NULL
+             WHERE b.board_type = 'TASTE_RECOMMEND' AND b.content_signature = :signature AND b.deleted_at IS NULL
             """, nativeQuery = true)
     Optional<Board> findActiveAiBoardBySignature(@Param("signature") String signature);
 
@@ -81,7 +81,7 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
     Optional<Board> findSearchBoard(@Param("title") String title, @Param("signature") String signature);
 
     /**
-     * AI_RECOMMEND 보드 행을 만든다. 같은 구성이 이미 있으면 아무것도 하지 않는다.
+     * TASTE_RECOMMEND 보드 행을 만든다. 같은 구성이 이미 있으면 아무것도 하지 않는다.
      *
      * <p>"없으면 저장"을 조회 뒤 save()로 하면, 두 사람이 동시에 처음 좋아요할 때 둘 다 "없음"을 보고
      * 저장하다가 uk_board_ai_signature에 걸린다. 예외를 잡아 다시 조회하는 방식은 PostgreSQL이 오류 난
@@ -95,8 +95,8 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
      */
     @Query(value = """
             INSERT INTO board (board_type, visibility, title, content_signature, like_count, created_at)
-            VALUES ('AI_RECOMMEND', 'PUBLIC', :title, :signature, 1, LOCALTIMESTAMP)
-            ON CONFLICT (content_signature) WHERE board_type = 'AI_RECOMMEND' AND deleted_at IS NULL DO NOTHING
+            VALUES ('TASTE_RECOMMEND', 'PUBLIC', :title, :signature, 1, LOCALTIMESTAMP)
+            ON CONFLICT (content_signature) WHERE board_type = 'TASTE_RECOMMEND' AND deleted_at IS NULL DO NOTHING
             RETURNING id
             """, nativeQuery = true)
     Optional<Long> insertAiBoard(@Param("title") String title, @Param("signature") String signature);
@@ -141,7 +141,7 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
      * 불어나지 않아 DISTINCT가 필요 없다. (이 제약이 없었다면 페이징 개수가 통째로 틀어진다.)</p>
      *
      * <p>소유자 조인을 <b>명시적 LEFT JOIN</b>으로 쓴다. b.user.id로 적으면 구현체에 따라
-     * 암묵적 INNER JOIN이 되어, 소유자가 없는 전역 공용 보드(AI_RECOMMEND)가
+     * 암묵적 INNER JOIN이 되어, 소유자가 없는 전역 공용 보드(TASTE_RECOMMEND)가
      * 좋아요 조건을 만족해도 통째로 빠질 수 있다. 에러가 아니라 "일부가 안 보이는" 증상으로만
      * 드러나므로 애매하게 두지 않는다.</p>
      */
@@ -281,7 +281,7 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
      * 좋아요가 하나도 남지 않아 더는 보관할 이유가 없는 보드를 지운다.
      *
      * <ul>
-     *   <li>AI_RECOMMEND, SEARCH_RECOMMEND — 좋아요가 0이 되는 순간</li>
+     *   <li>TASTE_RECOMMEND, SEARCH_RECOMMEND — 좋아요가 0이 되는 순간</li>
      *   <li>USER_CUSTOM — 주인이 지운(소프트 삭제) 뒤 마지막 좋아요가 취소되는 순간. 주인이 지우지 않은 보드는
      *       좋아요가 0이어도 주인의 것이라 남긴다.</li>
      * </ul>
@@ -294,7 +294,7 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
     @Query(value = """
             DELETE FROM board b
              WHERE b.id = :boardId AND b.like_count = 0
-               AND (b.board_type IN ('AI_RECOMMEND', 'SEARCH_RECOMMEND') OR b.deleted_at IS NOT NULL)
+               AND (b.board_type IN ('TASTE_RECOMMEND', 'SEARCH_RECOMMEND') OR b.deleted_at IS NOT NULL)
             """, nativeQuery = true)
     int deleteIfUnliked(@Param("boardId") Long boardId);
 

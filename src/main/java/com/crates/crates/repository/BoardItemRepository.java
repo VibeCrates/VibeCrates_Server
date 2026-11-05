@@ -40,7 +40,7 @@ public interface BoardItemRepository extends JpaRepository<BoardItem, Long> {
              WHERE bi.board_id = :boardId
                AND EXISTS (SELECT 1 FROM board b
                             WHERE b.id = :boardId AND b.like_count = 0
-                              AND (b.board_type IN ('AI_RECOMMEND', 'SEARCH_RECOMMEND') OR b.deleted_at IS NOT NULL))
+                              AND (b.board_type IN ('TASTE_RECOMMEND', 'SEARCH_RECOMMEND') OR b.deleted_at IS NOT NULL))
             """, nativeQuery = true)
     int deleteItemsIfUnliked(@Param("boardId") Long boardId);
 }

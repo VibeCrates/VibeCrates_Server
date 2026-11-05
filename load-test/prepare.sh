@@ -45,7 +45,7 @@ echo "결과"
 $PSQL -F $'\t' <<'SQL' | while IFS=$'\t' read -r k v; do printf '  %-26s %s\n' "$k" "$v"; done
 SELECT '계정', count(*)::text FROM users
 UNION ALL SELECT '보드 (AI / 검색 / 사용자)',
-       count(*) FILTER (WHERE board_type = 'AI_RECOMMEND') || ' / ' || count(*) FILTER (WHERE board_type = 'SEARCH_RECOMMEND')
+       count(*) FILTER (WHERE board_type = 'TASTE_RECOMMEND') || ' / ' || count(*) FILTER (WHERE board_type = 'SEARCH_RECOMMEND')
        || ' / ' || count(*) FILTER (WHERE board_type = 'USER_CUSTOM')
   FROM board
 UNION ALL SELECT '좋아요', count(*)::text FROM board_feedback

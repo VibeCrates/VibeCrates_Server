@@ -74,7 +74,7 @@ public class BoardService {
     /**
      * 아직 저장되지 않은 보드(추천 보드, 검색 보드)를 사용자가 고쳤을 때 내 보드로 새로 만든다.
      *
-     * <p>고칠 원본이 서버에 없으므로 수정이 아니라 생성이다. 원본이 되는 AI_RECOMMEND 보드는
+     * <p>고칠 원본이 서버에 없으므로 수정이 아니라 생성이다. 원본이 되는 TASTE_RECOMMEND 보드는
      * 애초에 저장된 적이 없으니 건드릴 것도 없다.</p>
      */
     @Transactional
@@ -526,7 +526,7 @@ public class BoardService {
     @Transactional
     public BoardLikeResponse likeRecommendedBoard(String title, List<Long> contentIds, Long userId)
     {
-        return likeGeneratedBoard(GeneratedBoard.AI_RECOMMEND, Board.normalizeTitle(title), contentIds, userId);
+        return likeGeneratedBoard(GeneratedBoard.TASTE_RECOMMEND, Board.normalizeTitle(title), contentIds, userId);
     }
 
     /**
@@ -545,7 +545,7 @@ public class BoardService {
     /** 좋아요할 때 저장되는 보드 종류. 같은 보드를 찾는 기준과 만드는 문장이 다르다. */
     private enum GeneratedBoard
     {
-        AI_RECOMMEND, SEARCH_RECOMMEND
+        TASTE_RECOMMEND, SEARCH_RECOMMEND
     }
 
     /**
@@ -571,7 +571,7 @@ public class BoardService {
         {
             Optional<Board> existing = switch (kind)
             {
-                case AI_RECOMMEND -> boardRepository.findActiveAiBoardBySignature(signature);
+                case TASTE_RECOMMEND -> boardRepository.findActiveAiBoardBySignature(signature);
                 case SEARCH_RECOMMEND -> boardRepository.findSearchBoard(title, signature);
             };
             if (existing.isPresent())
@@ -586,7 +586,7 @@ public class BoardService {
 
             Optional<Long> createdId = switch (kind)
             {
-                case AI_RECOMMEND -> boardRepository.insertAiBoard(title, signature);
+                case TASTE_RECOMMEND -> boardRepository.insertAiBoard(title, signature);
                 case SEARCH_RECOMMEND -> boardRepository.insertSearchBoard(title, signature);
             };
             if (createdId.isPresent())
@@ -634,7 +634,7 @@ public class BoardService {
      * 같은 콘텐츠 구성의 보드 중 목록에 남길 하나를 고른다.
      *
      * <ol>
-     *   <li>타입 우선순위 — USER_CUSTOM &gt; SEARCH_RECOMMEND &gt; AI_RECOMMEND.
+     *   <li>타입 우선순위 — USER_CUSTOM &gt; SEARCH_RECOMMEND &gt; TASTE_RECOMMEND.
      *       사람이 더 많이 관여한 보드가 앞선다. 검색 보드는 사용자가 입력한 검색어가 제목이다.</li>
      *   <li>같은 타입이면 <b>좋아요가 많은 쪽</b>. 인기 보드 목록에서 적게 받은 쪽을 남길 이유가 없다.</li>
      *   <li>좋아요까지 같으면 먼저 만들어진 쪽(id가 작은 쪽).</li>
@@ -666,7 +666,7 @@ public class BoardService {
         return board.getLikeCount() == null ? 0L : board.getLikeCount();
     }
 
-    // 값이 작을수록 우선. USER_CUSTOM > SEARCH_RECOMMEND > AI_RECOMMEND.
+    // 값이 작을수록 우선. USER_CUSTOM > SEARCH_RECOMMEND > TASTE_RECOMMEND.
     // 인기 보드 정렬(BoardRepository.findPopularBoards, idx_board_popular)의 CASE 식과 같은 순서다.
     private static int dedupePriority(BoardType boardType)
     {
@@ -674,7 +674,7 @@ public class BoardService {
         {
             case USER_CUSTOM -> 0;
             case SEARCH_RECOMMEND -> 1;
-            case AI_RECOMMEND -> 2;
+            case TASTE_RECOMMEND -> 2;
         };
     }
 

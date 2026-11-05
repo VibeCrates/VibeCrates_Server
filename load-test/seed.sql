@@ -161,7 +161,7 @@ FROM plan_item GROUP BY k;
 -- 사용자 보드는 공개로 만든다 — 앱이 사용자 보드를 만들 때의 기본값이다.
 INSERT INTO board (user_id, board_type, visibility, title, content_signature, like_count, created_at)
 SELECT CASE b.kind WHEN 'CUSTOM' THEN b.actor END,
-       CASE b.kind WHEN 'AI' THEN 'AI_RECOMMEND' WHEN 'SEARCH' THEN 'SEARCH_RECOMMEND' ELSE 'USER_CUSTOM' END,
+       CASE b.kind WHEN 'AI' THEN 'TASTE_RECOMMEND' WHEN 'SEARCH' THEN 'SEARCH_RECOMMEND' ELSE 'USER_CUSTOM' END,
        'PUBLIC', b.title, s.signature, 0, b.created_at
 FROM plan_board b JOIN plan_sig s USING (k)
 WHERE s.n = 8
