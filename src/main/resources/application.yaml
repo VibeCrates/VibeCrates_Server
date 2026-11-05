@@ -285,11 +285,23 @@ job:
     types: book,movie,music  # 채울 종류. 일부만 다시 돌릴 때 줄인다
     report-location:      # 실패 목록 CSV(s3://버킷/키 또는 file:경로). 비우면 남기지 않는다
 
+# 사용자 행동 로그 내보내기(UserEventLogExporter, docs/board-schema.md 13-7). 하루치씩 JSONL + gzip으로 올린다.
+# 로컬은 MinIO의 crates-ops 버킷(docker-compose의 minio-init이 만든다), 운영은 ops 버킷(application-prod.yaml).
+event-log:
+  export:
+    bucket: crates-ops
+    prefix: event-logs
+    # 어제부터 며칠 전까지 빠진 날을 채울지. AWS를 꺼 둔 날은 다음 실행에서 올라간다. 이보다 오래 꺼 두면 그 날들은 손으로 올린다.
+    catch-up-days: 7
+
 scheduler:
   # 주기 작업 전체. 일회성 작업으로 앱을 띄울 때만 끈다(SchedulingConfig).
   enabled: true
   refresh-token-cleanup:
     cron: "0 0 4 * * *"
+  # 전날 행동 로그 내보내기. 하루가 끝나고 3시간 뒤라 그날 시작한 트랜잭션은 모두 커밋돼 있다.
+  event-log-export:
+    cron: "0 0 3 * * *"
   # 재계산이 유실된 취향 벡터를 뒤늦게 고치는 배치. 근거는 UserVectorBackfillService 주석 참고.
   #
   # grace: 방금 누른 좋아요는 아직 비동기 재계산이 도는 중일 수 있다. 그것까지 밀린 것으로 보면

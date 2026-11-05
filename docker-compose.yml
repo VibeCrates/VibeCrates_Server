@@ -44,6 +44,8 @@ services:
       mc mb --ignore-existing local/content-bucket;
       mc anonymous set download local/content-bucket;
       echo 'content-bucket 준비 완료 (익명 읽기 허용)';
+      mc mb --ignore-existing local/crates-ops;
+      echo 'crates-ops 준비 완료 (행동 로그 내보내기, 비공개)';
       "
     restart: "no"
 

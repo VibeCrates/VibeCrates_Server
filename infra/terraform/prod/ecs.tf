@@ -159,6 +159,7 @@ resource "aws_ecs_task_definition" "backend" {
       { name = "REDIS_HOST", value = var.active ? aws_elasticache_replication_group.main[0].primary_endpoint_address : "" },
       { name = "QDRANT_HOST", value = aws_instance.qdrant.private_ip },
       { name = "STORAGE_BUCKET_NAME", value = aws_s3_bucket.images.id },
+      { name = "EVENT_LOG_BUCKET", value = aws_s3_bucket.ops.id }, # 행동 로그 내보내기(event_logs.tf)
       { name = "AI_SERVER_BASE_URL", value = var.ai_server_base_url },
     ]
 

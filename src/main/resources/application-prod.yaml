@@ -11,6 +11,7 @@
 #   REDIS_HOST               ElastiCache 기본 엔드포인트
 #   QDRANT_HOST, QDRANT_API_KEY
 #   STORAGE_BUCKET_NAME      이미지 버킷 이름
+#   EVENT_LOG_BUCKET         행동 로그를 내보낼 ops 버킷 이름
 #   AI_SERVER_BASE_URL       application.yaml이 읽는다(위치 미정이라 주소만 바꾼다)
 #   JWT_SECRET_KEY, GOOGLE_*, KAKAO_*, NAVER_*   application.yaml이 읽는다
 
@@ -72,6 +73,11 @@ storage:
   bucket-name: ${STORAGE_BUCKET_NAME}
   # 브라우저는 S3가 아니라 CloudFront의 /images 경로로 받는다(버킷은 비공개, OAC로만 읽힌다).
   bucket-url: ${SITE_URL}/images
+
+# 행동 로그는 ops 버킷의 event-logs/ 아래로 간다. AI 개발자는 그 경로만 읽을 수 있다(infra/terraform/prod/event_logs.tf).
+event-log:
+  export:
+    bucket: ${EVENT_LOG_BUCKET}
 
 app:
   oauth2:
