@@ -1,14 +1,17 @@
 package com.crates.crates.service;
 
-import com.crates.crates.DTO.BoardContentIdDto;
+import com.crates.crates.DTO.BoardItemRowDto;
 import com.crates.crates.DTO.BoardLikeResponse;
 import com.crates.crates.DTO.BoardSaveRequest;
 import com.crates.crates.DTO.BoardWithContentsDto;
 import com.crates.crates.DTO.ContentResponseDto;
 import com.crates.crates.DTO.PageResponse;
+import com.crates.crates.DTO.SlotLayoutDto;
+import com.crates.crates.Global.exception.DuplicateBoardException;
 import com.crates.crates.Global.exception.BusinessException;
 import com.crates.crates.entity.board.Board;
 import com.crates.crates.entity.board.BoardFeedback;
+import com.crates.crates.entity.board.ItemLayout;
 import com.crates.crates.entity.contents.Content;
 import com.crates.crates.entity.user.User;
 import com.crates.crates.enumData.BoardType;
@@ -83,7 +86,7 @@ public class BoardService {
 
         User owner = findUser(userId);
         Board board = newUserBoard(owner, title);
-        board.replaceContents(contents);
+        board.replaceContents(contents, SlotLayoutDto.toEntities(request.layout()));
         boardRepository.save(board);
 
         return toResponse(board, contentService.getContentSummaries(request.contentIds()), userId);
@@ -111,6 +114,8 @@ public class BoardService {
         List<Content> contents = validateAndLoadContents(request.contentIds());
         String signature = Board.signatureOf(request.contentIds());
         String title = Board.normalizeTitle(request.title());
+        // 배치만 바꾼 수정도 제목·구성이 그대로라 같은 갈래로 간다. 배치는 중복 판별에 넣지 않는다(docs/board-schema.md 12장).
+        List<ItemLayout> layout = SlotLayoutDto.toEntities(request.layout());
 
         Board origin = findReadableBoard(boardId, userId);
 
@@ -122,7 +127,7 @@ public class BoardService {
             // 제목만 바꾼 수정은 같은 구성의 내 다른 보드와 제목이 겹치면 거절된다.
             ensureNoDuplicateUserBoard(userId, signature, title, origin.getId());
             origin.updateTitle(title);
-            origin.replaceContents(contents);
+            origin.replaceContents(contents, layout);
             target = origin;
         }
         else
@@ -131,7 +136,7 @@ public class BoardService {
             // 원본의 좋아요는 옮기지 않는다. 원본은 다른 사용자들의 것이기도 하다.
             ensureNoDuplicateUserBoard(userId, signature, title, null);
             Board ownBoard = newUserBoard(findUser(userId), title);
-            ownBoard.replaceContents(contents);
+            ownBoard.replaceContents(contents, layout);
             target = boardRepository.save(ownBoard);
         }
 
@@ -191,7 +196,7 @@ public class BoardService {
                 .filter(board -> !board.getId().equals(excludedBoardId))
                 .ifPresent(board ->
                 {
-                    throw new BusinessException("이미 같은 제목과 구성의 보드를 갖고 계세요. boardId: " + board.getId());
+                    throw new DuplicateBoardException(board.getId());
                 });
     }
 
@@ -225,7 +230,7 @@ public class BoardService {
 
         return new BoardWithContentsDto(
                 board.getId(), board.getTitle(), board.getLikeCount(), liked, board.isDeleted(),
-                isOwnedBy(board, userId), contents);
+                isOwnedBy(board, userId), contents, SlotLayoutDto.fromEntities(board.getLayout()));
     }
 
     public List<BoardWithContentsDto> getLikedBoards(int n, Long userId)
@@ -300,17 +305,14 @@ public class BoardService {
         List<Long> boardIds = boards.stream()
                 .map(Board::getId)
                 .toList();
-        List<BoardContentIdDto> pairs = boardItemRepository.findContentIdsByBoardIds(boardIds);
+        List<BoardItemRowDto> rows = boardItemRepository.findItemsByBoardIds(boardIds);
 
         // slotNo 순으로 정렬돼 오므로 groupingBy가 그 순서를 그대로 유지한다.
-        Map<Long, List<Long>> contentIdsByBoardId = pairs.stream()
-                .collect(Collectors.groupingBy(
-                        BoardContentIdDto::boardId,
-                        Collectors.mapping(BoardContentIdDto::contentId, Collectors.toList())
-                ));
+        Map<Long, List<BoardItemRowDto>> rowsByBoardId = rows.stream()
+                .collect(Collectors.groupingBy(BoardItemRowDto::boardId));
 
-        List<Long> allContentIds = pairs.stream()
-                .map(BoardContentIdDto::contentId)
+        List<Long> allContentIds = rows.stream()
+                .map(BoardItemRowDto::contentId)
                 .distinct()
                 .toList();
         Map<Long, ContentResponseDto> summaryById = contentService.getContentSummaries(allContentIds).stream()
@@ -327,12 +329,23 @@ public class BoardService {
                         board.isDeleted(),
                         // 소유자는 지연 로딩 프록시지만 id만 읽으므로 users를 조회하지 않는다.
                         isOwnedBy(board, userId),
-                        contentIdsByBoardId.getOrDefault(board.getId(), List.of()).stream()
-                                .map(summaryById::get)
+                        rowsByBoardId.getOrDefault(board.getId(), List.of()).stream()
+                                .map(row -> summaryById.get(row.contentId()))
                                 .filter(Objects::nonNull)
-                                .toList()
+                                .toList(),
+                        layoutOf(rowsByBoardId.getOrDefault(board.getId(), List.of()))
                 ))
                 .toList();
+    }
+
+    /** 8칸이 모두 있거나 모두 없게 저장하므로 첫 칸만 보고 기본 배치인지 판단한다(Board.getLayout과 같다). */
+    private static List<SlotLayoutDto> layoutOf(List<BoardItemRowDto> rows)
+    {
+        if (rows.isEmpty() || rows.getFirst().layout() == null)
+        {
+            return null;
+        }
+        return SlotLayoutDto.fromEntities(rows.stream().map(BoardItemRowDto::layout).toList());
     }
 
     /**
@@ -496,7 +509,8 @@ public class BoardService {
                 boardFeedbackRepository.existsByBoardIdAndUserIdAndRating(board.getId(), userId, Rating.LIKE),
                 false,
                 false,  // 추천·검색 보드는 소유자가 없다
-                contents);
+                contents,
+                null);  // 추천·검색 보드는 배치를 갖지 않는다
     }
 
     /**
@@ -578,8 +592,9 @@ public class BoardService {
             if (createdId.isPresent())
             {
                 // 행은 좋아요 1로 만들어졌다. 콘텐츠를 채우면 slotNo도 함께 정해진다.
+                // 추천·검색 보드는 배치를 갖지 않는다(기본 배치).
                 Board board = boardRepository.findById(createdId.get()).orElseThrow();
-                board.replaceContents(contents);
+                board.replaceContents(contents, null);
                 saveFeedback(board, userId);
                 publishLikeChanged(userId);
                 return new BoardLikeResponse(board.getId(), board.getLikeCount(), true);

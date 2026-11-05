@@ -1,6 +1,7 @@
 package com.crates.crates.Global.exception;
 
 import com.crates.crates.DTO.ApiResponse;
+import com.crates.crates.DTO.DuplicateBoardResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
@@ -25,6 +26,14 @@ public class GlobalExceptionHandler {
     {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(new ApiResponse<>(false, null, e.getMessage()));
+    }
+
+    /** BusinessException과 같은 400이지만, 이미 있는 내 보드의 id를 data에 담는다. */
+    @ExceptionHandler(DuplicateBoardException.class)
+    public ResponseEntity<ApiResponse<DuplicateBoardResponse>> handleDuplicateBoard(DuplicateBoardException e)
+    {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(new ApiResponse<>(false, new DuplicateBoardResponse(e.getExistingBoardId()), e.getMessage()));
     }
 
     /** AI 서버로 가는 요청이 밀렸다(EmbeddingBatcher). 붐비는 것이지 고장이 아니므로 스택은 남기지 않는다. */

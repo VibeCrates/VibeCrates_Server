@@ -2,7 +2,9 @@ package com.crates.crates.service;
 
 import com.crates.crates.DTO.BoardLikeResponse;
 import com.crates.crates.DTO.BoardSaveRequest;
+import com.crates.crates.DTO.SlotLayoutDto;
 import com.crates.crates.Global.exception.BusinessException;
+import com.crates.crates.Global.exception.DuplicateBoardException;
 import com.crates.crates.entity.board.Board;
 import com.crates.crates.entity.contents.Content;
 import com.crates.crates.entity.user.User;
@@ -49,6 +51,8 @@ class BoardServiceLikeTest {
     private static final Long BOARD_ID = 100L;
     private static final List<Long> CONTENT_IDS = LongStream.rangeClosed(1, 8).boxed().toList();
     private static final String SIGNATURE = Board.signatureOf(CONTENT_IDS);
+    private static final List<SlotLayoutDto> LAYOUT = LongStream.rangeClosed(1, 8)
+            .mapToObj(i -> new SlotLayoutDto(i * 10f, 50f, -5f, (int) i)).toList();
 
     @Mock private BoardRepository boardRepository;
     @Mock private BoardItemRepository boardItemRepository;
@@ -255,12 +259,47 @@ class BoardServiceLikeTest {
         when(boardRepository.findActiveUserBoard(USER_ID, SIGNATURE, "재즈")).thenReturn(Optional.of(existing));
         when(boardRepository.findActiveUserBoard(USER_ID, SIGNATURE, "새벽")).thenReturn(Optional.empty());
 
-        BusinessException e = assertThrows(BusinessException.class,
+        DuplicateBoardException e = assertThrows(DuplicateBoardException.class,
                 () -> service.createUserBoard(new BoardSaveRequest(" 재즈 ", CONTENT_IDS), USER_ID));
         assertTrue(e.getMessage().startsWith("이미 같은 제목과 구성의 보드"));
+        // 프론트가 "보관함의 보드 열기"로 안내할 수 있게 이미 있는 보드를 알려 준다(docs/board-schema.md 12-4).
+        assertEquals(BOARD_ID, e.getExistingBoardId());
 
         service.createUserBoard(new BoardSaveRequest("새벽", CONTENT_IDS), USER_ID);
         verify(boardRepository).save(any(Board.class));
+    }
+
+    @Test
+    @DisplayName("배치만 바꾼 내 보드는 자기 자신 때문에 거절되지 않고, 받은 배치로 덮어쓴다")
+    void layoutOnlyUpdateOfOwnBoard()
+    {
+        Board mine = userBoard(BOARD_ID, user(USER_ID));
+        when(boardRepository.findById(BOARD_ID)).thenReturn(Optional.of(mine));
+        when(boardRepository.findActiveUserBoard(USER_ID, SIGNATURE, "t")).thenReturn(Optional.of(mine));
+
+        var saved = service.updateBoard(BOARD_ID, new BoardSaveRequest("t", CONTENT_IDS, LAYOUT), USER_ID);
+
+        assertEquals(BOARD_ID, saved.boardId());
+        assertEquals(LAYOUT, saved.layout());
+        verify(boardRepository, never()).save(any(Board.class));
+
+        // 배치 없이 보내면 기본 배치로 돌아간다(docs/board-schema.md 12-3).
+        assertNull(service.updateBoard(BOARD_ID, new BoardSaveRequest("t", CONTENT_IDS), USER_ID).layout());
+    }
+
+    @Test
+    @DisplayName("남의 보드를 배치만 바꿔 저장하면 원본은 두고 그 배치로 내 보드를 새로 만든다")
+    void layoutOnlyUpdateOfOthersBoardSavesAsNew()
+    {
+        Board others = userBoard(BOARD_ID, user(99L));
+        when(boardRepository.findById(BOARD_ID)).thenReturn(Optional.of(others));
+        when(boardRepository.findActiveUserBoard(USER_ID, SIGNATURE, "t")).thenReturn(Optional.empty());
+        when(boardRepository.save(any(Board.class))).thenAnswer(call -> call.getArgument(0));
+
+        var saved = service.updateBoard(BOARD_ID, new BoardSaveRequest("t", CONTENT_IDS, LAYOUT), USER_ID);
+
+        assertEquals(LAYOUT, saved.layout());
+        assertTrue(others.getBoardItems().isEmpty());   // 원본은 건드리지 않았다
     }
 
     private static Board board(Long id, BoardType type)

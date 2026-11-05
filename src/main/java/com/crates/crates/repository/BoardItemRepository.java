@@ -1,6 +1,7 @@
 package com.crates.crates.repository;
 
 import com.crates.crates.DTO.BoardContentIdDto;
+import com.crates.crates.DTO.BoardItemRowDto;
 import com.crates.crates.entity.board.BoardItem;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
@@ -19,6 +20,12 @@ public interface BoardItemRepository extends JpaRepository<BoardItem, Long> {
     @Query("SELECT new com.crates.crates.DTO.BoardContentIdDto(bi.board.id, bi.content.id) " +
             "FROM BoardItem bi WHERE bi.board.id IN :boardIds ORDER BY bi.board.id, bi.slotNo")
     List<BoardContentIdDto> findContentIdsByBoardIds(@Param("boardIds") List<Long> boardIds);
+
+    // 보드 목록 응답용. 위와 같은 순서에 배치(docs/board-schema.md 12장)를 함께 읽는다. 기본 배치면 네 값이 null이다.
+    @Query("SELECT new com.crates.crates.DTO.BoardItemRowDto(bi.board.id, bi.content.id, " +
+            "bi.layout.x, bi.layout.y, bi.layout.rotation, bi.layout.z) " +
+            "FROM BoardItem bi WHERE bi.board.id IN :boardIds ORDER BY bi.board.id, bi.slotNo")
+    List<BoardItemRowDto> findItemsByBoardIds(@Param("boardIds") List<Long> boardIds);
 
     /**
      * {@link BoardRepository#deleteIfUnliked}로 지울 보드의 콘텐츠를 먼저 지운다. 조건이 같아야 한다.

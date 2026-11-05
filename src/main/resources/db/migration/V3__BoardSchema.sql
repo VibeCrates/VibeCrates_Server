@@ -52,10 +52,21 @@ create table board_item (
     board_id   bigint,
     content_id bigint,
     slot_no    integer not null,
+    -- 사용자가 옮기고 돌린 배치(docs/board-schema.md 12장). NULL이면 프론트의 기본 배치로 그린다.
+    -- 위치는 포스터 중심이 보드 폭·높이의 몇 %인지, 회전은 도, z_order는 겹침 순위(클수록 위)다.
+    pos_x      real,
+    pos_y      real,
+    rotation   real,
+    z_order    smallint,
     primary key (id),
 
-    -- 2행 4열, 1~8.
+    -- 칸 번호 1~8. 배치가 생긴 뒤로는 화면 위치가 아니라 칸 번호다(위치는 pos_x·pos_y).
     constraint ck_board_item_slot check (slot_no between 1 and 8),
+    -- 배치 네 값은 함께 있거나 함께 없다. 보드 8칸 전체가 그런지는 앱(Board.replaceContents)이 본다.
+    constraint ck_board_item_layout check (
+        (pos_x is null) = (pos_y is null) and (pos_x is null) = (rotation is null) and (pos_x is null) = (z_order is null)),
+    constraint ck_board_item_layout_range check (
+        pos_x between 0 and 100 and pos_y between 0 and 100 and rotation between -180 and 180 and z_order between 1 and 8),
 
     -- 아래 두 개는 인덱스가 아니라 DEFERRABLE 제약이다. 검사 시점이 문장 단위가 아니라
     -- 커밋 시점이어야 하기 때문이다. 보드 수정은 콘텐츠 8건을 통째로 교체하는데, 그 과정에서
@@ -68,7 +79,9 @@ create table board_item (
     constraint uk_board_item_slot    unique (board_id, slot_no)    deferrable initially deferred,
     -- 한 보드에 같은 콘텐츠가 두 번 들어가면 content_signature가 "1,1,2,..."가 되어
     -- 8건 규칙이 무너지고 슬롯 하나가 중복 포스터로 채워진다.
-    constraint uk_board_item_content unique (board_id, content_id) deferrable initially deferred
+    constraint uk_board_item_content unique (board_id, content_id) deferrable initially deferred,
+    -- 겹침 순위가 같으면 다시 열 때마다 위에 오는 포스터가 달라진다. NULL끼리는 겹쳐도 된다.
+    constraint uk_board_item_z       unique (board_id, z_order)    deferrable initially deferred
 );
 
 -- 한 사용자가 같은 보드에 두 번 피드백할 수 없다. 이 제약이 없으면 좋아요 연타로

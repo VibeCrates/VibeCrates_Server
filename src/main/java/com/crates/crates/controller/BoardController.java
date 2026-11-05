@@ -121,8 +121,8 @@ public class BoardController {
                 .body(new ApiResponse<>(true, result, "보드 생성 성공"));
     }
 
-    // 보드의 제목과 콘텐츠를 통째로 갱신한다. 배열 순서가 곧 배치 순서(slot 1~8)라,
-    // 제목 변경·콘텐츠 교체·순서 변경이 모두 같은 요청으로 처리된다.
+    // 보드의 제목·콘텐츠·배치를 통째로 갱신한다. 배열 순서가 곧 칸 순서(slot 1~8)이고 layout도 같은 순서다.
+    // 제목 변경·콘텐츠 교체·배치 변경이 모두 같은 요청으로 처리된다(docs/board-schema.md 12장).
     // 내 보드가 아니면 원본은 두고 내 보드로 새로 저장해 돌려주므로, 응답의 boardId를 반영해야 한다.
     @PutMapping("/{boardId}")
     public ResponseEntity<ApiResponse<BoardWithContentsDto>> updateBoard(
