@@ -1116,10 +1116,46 @@ Grafana는 저장소가 아니라 **보는 도구**다. 데이터는 다른 곳(
 - Grafana 대시보드가 필요하면 PostgreSQL을 데이터 소스로 붙이면 된다. 저장 방식을 바꿀 필요가 없다.
 - 행이 많아지면 `created_at` 기준 월별 파티션이나 오래된 행을 S3로 내보내는 방식을 그때 검토한다.
 
-### 13-7. 정할 것
+### 13-7. AI 개발자에게 전달 — 매일 S3로 내보내기 (2026-11-06 결정)
 
-- AI 개발자가 로그를 읽는 방법 — 읽기 전용 DB 계정, 내보내기 API, 주기적 CSV/JSONL 내보내기 중 하나
-- 보관 기간
+운영 DB에는 사용자만 접근할 수 있다. AI 개발자에게 DB·SSM 권한을 주지 않고, **하루치씩 파일로 내보내 그 파일만 읽게** 한다.
+
+```
+s3://crates-prod-ops-<계정ID>/event-logs/dt=2026-11-05/events.jsonl.gz
+{"id":13,"userId":1,"eventType":"BOARD_UNLIKE","createdAt":"2026-11-05T23:32:33.867408+09:00","payload":{"v":1,"board":{...}}}
+```
+
+- **형식은 JSONL + gzip.** 한 줄이 이벤트 하나다(`id`, `userId`, `eventType`, `createdAt`, `payload`). Python에서
+  `pandas.read_json(path, lines=True, compression="gzip")`로 바로 읽힌다. SQL 덤프는 AI 개발자도 PostgreSQL을 띄워야 해서 쓰지 않는다.
+  `createdAt`은 한국 시간(+09:00)이고, `payload`는 13-2~13-5 모양 그대로다. 이메일·닉네임은 담기지 않는다.
+- **매일 새벽 3시(KST)에 전날 하루치**를 올린다(`UserEventLogExporter`, `scheduler.event-log-export.cron`).
+  날짜 경계는 한국 자정이다. 이미 끝난 날을 통째로 올리는 이유: `created_at`은 트랜잭션 시작 시각이라 커밋 순서와 조금 어긋날 수 있어,
+  "마지막으로 올린 id 이후"로 끊으면 늦게 커밋된 행을 빠뜨린다.
+- **빠진 날을 채운다.** 매번 어제부터 7일 전(`event-log.export.catch-up-days`)까지 파일이 없는 날을 모두 올린다. AWS를 꺼 둔 동안
+  거른 날은 다시 켠 뒤 첫 새벽 3시에 올라간다. 7일보다 오래 꺼 두면 그 날들은 손으로 올린다. 파일이 있으면 다시 올리지 않는다.
+- **이벤트가 없는 날도 빈 파일을 올린다.** "그날 0건"과 "아직 안 올림"을 구분하게 한다.
+- 하루치를 메모리에 올리지 않고 DB 커서로 1000행씩 읽어 바로 압축한다. 커넥션은 읽는 동안만 쥐고, S3 업로드는 트랜잭션 밖이다.
+  날짜로 고를 인덱스가 없어 하루치마다 테이블을 한 번 훑는다(13-1). 하루 한 번 새벽이라 감수한다.
+- 로컬은 MinIO의 `crates-ops` 버킷에 올린다(`docker-compose.yml`의 `minio-init`이 만든다).
+
+**권한** (`infra/terraform/prod/event_logs.tf`)
+
+| 누구 | 할 수 있는 것 | 할 수 없는 것 |
+|---|---|---|
+| backend(ECS 작업 역할) | `event-logs/`에 쓰기, `event-logs/` 목록 보기 | 올린 파일 읽기·지우기, `jobs/` |
+| AI 개발자(IAM 사용자 `crates-prod-ai-log-reader`) | `event-logs/` 목록 보기, 파일 내려받기 | 쓰기·지우기, 같은 버킷의 `jobs/`, 다른 버킷, 다른 모든 AWS 서비스, 콘솔 로그인 |
+
+- AI 개발자는 계정의 결제·연락처 정보, 다른 IAM 사용자, RDS·ECS·SSM·Secrets Manager를 볼 수 없다. 알게 되는 것은 버킷 이름에 든 계정 ID와
+  자기 IAM 사용자 이름뿐이다(`aws sts get-caller-identity`는 권한 없이도 된다). 계정 ID는 그것만으로 접근할 수 있는 값이 아니다.
+- **액세스 키는 Terraform으로 만들지 않는다.** 만들면 비밀 키가 state에 평문으로 남는다. 사용자가 직접 발급해 전달한다:
+  `aws iam create-access-key --user-name crates-prod-ai-log-reader`. 그만 줄 때는 키를 비활성화하거나 지운다.
+- AI 개발자는 `aws s3 sync s3://<버킷>/event-logs/ ./event-logs/`로 받아 간다. 버킷 목록 권한이 없어 `aws s3 ls`(전체)는 실패하니
+  경로를 알려 준다(`terraform output event_log_location`).
+
+**남은 것**
+
+- 보관 기간. 지금은 지우지 않는다(ops 버킷의 30일 만료는 `jobs/`에만 걸려 있다). 정하면 `event-logs/` 만료 규칙을 더한다.
+- 추천 노출 이벤트(온라인 지표의 분모, load-test-and-metrics.md 5-4)는 아직 쌓지 않는다.
 
 ---
 
