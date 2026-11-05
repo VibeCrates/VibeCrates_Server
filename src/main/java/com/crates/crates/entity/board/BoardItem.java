@@ -33,7 +33,7 @@ public class BoardItem {
      *   5 6 7 8
      * </pre>
      *
-     * <p>사용자가 직접 정할 수 있는 것은 USER_CUSTOM 보드뿐이고, AI_RECOMMEND는 생성 시점에
+     * <p>사용자가 직접 정할 수 있는 것은 USER_CUSTOM 보드뿐이고, TASTE_RECOMMEND는 생성 시점에
      * 유사도 순으로 자동으로 채운다.
      * nullable로 두면 조회 시 정렬 기준이 사라져 순서가 매번 달라지므로 NOT NULL이다.</p>
      *

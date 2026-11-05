@@ -73,7 +73,7 @@ class BoardServiceLikeTest {
         // 목 안에서 목을 만들면(when 안의 when) 스터빙이 꼬인다. 먼저 만들어 둔다.
         User me = user(USER_ID);
         when(userRepository.findById(USER_ID)).thenReturn(Optional.of(me));
-        when(boardRepository.getReferenceById(anyLong())).thenAnswer(call -> board(call.getArgument(0), BoardType.AI_RECOMMEND));
+        when(boardRepository.getReferenceById(anyLong())).thenAnswer(call -> board(call.getArgument(0), BoardType.TASTE_RECOMMEND));
     }
 
     @Nested
@@ -193,12 +193,12 @@ class BoardServiceLikeTest {
         {
             Long recreatedId = 200L;
             when(boardRepository.findActiveAiBoardBySignature(SIGNATURE))
-                    .thenReturn(Optional.of(board(BOARD_ID, BoardType.AI_RECOMMEND)))
+                    .thenReturn(Optional.of(board(BOARD_ID, BoardType.TASTE_RECOMMEND)))
                     .thenReturn(Optional.empty());
             when(boardRepository.incrementLikeCount(BOARD_ID)).thenReturn(0);
             when(boardRepository.insertAiBoard("새벽 감성", SIGNATURE)).thenReturn(Optional.of(recreatedId));
             when(boardRepository.findById(recreatedId))
-                    .thenReturn(Optional.of(board(recreatedId, BoardType.AI_RECOMMEND)));
+                    .thenReturn(Optional.of(board(recreatedId, BoardType.TASTE_RECOMMEND)));
 
             BoardLikeResponse response = service.likeRecommendedBoard(" 새벽 감성 ", CONTENT_IDS, USER_ID);
 

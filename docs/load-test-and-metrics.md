@@ -124,14 +124,14 @@ k6로 옮기면서 관측을 앱 계측으로 넘겼다 — 부하 생성기가 
 ```sql
 -- V5: board_type 이 부분 인덱스의 술어에 있다
 CREATE UNIQUE INDEX uk_board_ai_signature ON board (content_signature)
-    WHERE board_type = 'AI_RECOMMEND' AND deleted_at IS NULL;
+    WHERE board_type = 'TASTE_RECOMMEND' AND deleted_at IS NULL;
 ```
 ```java
 // board_type 을 바인드 파라미터로 넘긴다
 "WHERE b.boardType = :boardType AND b.contentSignature = :signature AND b.deletedAt IS NULL"
 ```
 
-PostgreSQL이 제네릭 플랜을 쓰면 `board_type = $1`이 `= 'AI_RECOMMEND'`를 함의한다고 증명하지
+PostgreSQL이 제네릭 플랜을 쓰면 `board_type = $1`이 `= 'TASTE_RECOMMEND'`를 함의한다고 증명하지
 못해 **부분 인덱스를 쓰지 못한다.** 실측(보드 3,128행):
 
 | 조건 | 실행 계획 | 버퍼 | 소요 |
@@ -415,7 +415,7 @@ signature 단독으로는 중복이 허용된다.
 | `(board_type, content_signature, user_id)` | Index Cond에 3컬럼 전부 | **4** | **0.020ms** |
 
 `board_type`을 선두에 두면 앞 두 컬럼이 `findActiveByTypeAndSignature`의 접두사가 되어
-AI_RECOMMEND 경로도 같은 인덱스 하나로 해결된다. 크기는 103,000행 기준 4.0MB → 4.9MB.
+TASTE_RECOMMEND 경로도 같은 인덱스 하나로 해결된다. 크기는 103,000행 기준 4.0MB → 4.9MB.
 
 > **인덱스를 설계할 때는 "어떤 쿼리가 쓰는가"가 아니라 "그 쿼리들의 조건 집합이 무엇인가"를
 > 봐야 한다.** 두 쿼리가 같은 인덱스를 쓴다는 사실만 보고 조건이 같다고 넘겨짚었다.
@@ -425,7 +425,7 @@ AI_RECOMMEND 경로도 같은 인덱스 하나로 해결된다. 크기는 103,00
 - `deleted_at IS NULL`은 부분 술어로 남겨도 된다. 쿼리에 **상수**로 박혀 있어 플래너가 증명할 수
   있다. **파라미터에 의존하는 술어만** 문제다.
 - 유니크 제약(`uk_board_ai_signature`, `uk_board_user_signature`)은 그대로 둔다. 제약의 의미가
-  부분적이라(삭제되지 않은 AI_RECOMMEND 안에서만 유일) 일반 유니크로 바꿀 수 없다.
+  부분적이라(삭제되지 않은 TASTE_RECOMMEND 안에서만 유일) 일반 유니크로 바꿀 수 없다.
   조회용 인덱스를 **따로** 추가하는 형태여야 한다.
 
 ### 3-2. 좋아요 → 취향 벡터 재계산 — 이력이 쌓이면 두 방향으로 무너진다
@@ -620,7 +620,7 @@ CREATE INDEX ... ;
 ANALYZE board;
 SET plan_cache_mode = force_generic_plan;   -- 바인드 파라미터 상황을 강제 재현
 PREPARE q(varchar, varchar) AS SELECT ... WHERE board_type = $1 AND content_signature = $2 ...;
-EXPLAIN (ANALYZE, BUFFERS) EXECUTE q('AI_RECOMMEND', '...');
+EXPLAIN (ANALYZE, BUFFERS) EXECUTE q('TASTE_RECOMMEND', '...');
 ROLLBACK;
 ```
 

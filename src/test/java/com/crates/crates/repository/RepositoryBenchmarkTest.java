@@ -143,7 +143,7 @@ class RepositoryBenchmarkTest {
         Long userId = userWithMostLikes();
         List<Long> boards = likedBoardIds(userId, 300);
         String aiSignature = jdbcTemplate.queryForObject(
-                "SELECT content_signature FROM board WHERE board_type = 'AI_RECOMMEND' "
+                "SELECT content_signature FROM board WHERE board_type = 'TASTE_RECOMMEND' "
                         + "AND deleted_at IS NULL ORDER BY id LIMIT 1", String.class);
 
         benchmark("BoardRepository.findPopularBoards  (인기 보드, 10건)", i ->
@@ -190,7 +190,7 @@ class RepositoryBenchmarkTest {
     @DisplayName("[성능] 추천·검색 보드 저장, 검색 보드 조회")
     void benchmarkGeneratedBoardInsert() {
         String existingAiSignature = jdbcTemplate.queryForObject(
-                "SELECT content_signature FROM board WHERE board_type = 'AI_RECOMMEND' "
+                "SELECT content_signature FROM board WHERE board_type = 'TASTE_RECOMMEND' "
                         + "AND deleted_at IS NULL ORDER BY id LIMIT 1", String.class);
 
         benchmark("BoardRepository.insertAiBoard  (새 AI 보드 저장·쓰기·롤백)", i ->
@@ -239,7 +239,7 @@ class RepositoryBenchmarkTest {
                 boardRepository.softDelete(owned.get(i % owned.size()), now));
 
         List<Long> unliked = jdbcTemplate.queryForList(
-                "SELECT id FROM board WHERE board_type = 'AI_RECOMMEND' AND like_count = 1 ORDER BY id LIMIT ?",
+                "SELECT id FROM board WHERE board_type = 'TASTE_RECOMMEND' AND like_count = 1 ORDER BY id LIMIT ?",
                 Long.class, n);
         assertThat(unliked).as("좋아요가 1개인 AI 보드가 %d개 필요합니다", n).hasSize(n);
         String ids = unliked.stream().map(String::valueOf).collect(Collectors.joining(","));

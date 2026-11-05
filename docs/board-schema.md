@@ -35,7 +35,7 @@
 ```sql
 CREATE TABLE board (
     id                BIGSERIAL PRIMARY KEY,
-    board_type        VARCHAR(20)  NOT NULL,   -- PRE_MADE | AI_RECOMMEND | USER_CUSTOM
+    board_type        VARCHAR(20)  NOT NULL,   -- PRE_MADE | TASTE_RECOMMEND | USER_CUSTOM
     user_id           BIGINT       NULL     REFERENCES member(id),
     visibility        VARCHAR(10)  NOT NULL,   -- PUBLIC | PRIVATE
     title             VARCHAR(255) NULL,
@@ -53,9 +53,9 @@ CREATE TABLE board (
         CHECK (visibility = 'PUBLIC' OR board_type = 'USER_CUSTOM')
 );
 
--- AI_RECOMMEND는 소유자가 없는 전역 공용 보드다. 콘텐츠 구성이 같으면 같은 보드 (전역 유일)
+-- TASTE_RECOMMEND는 소유자가 없는 전역 공용 보드다. 콘텐츠 구성이 같으면 같은 보드 (전역 유일)
 CREATE UNIQUE INDEX uk_board_ai_signature ON board (content_signature)
-    WHERE board_type = 'AI_RECOMMEND' AND deleted_at IS NULL;
+    WHERE board_type = 'TASTE_RECOMMEND' AND deleted_at IS NULL;
 
 -- USER_CUSTOM은 사용자 1명당 같은 구성의 보드를 1개만 가질 수 있다
 CREATE UNIQUE INDEX uk_board_user_signature ON board (user_id, content_signature)
@@ -99,7 +99,7 @@ CREATE UNIQUE INDEX uk_board_item_content ON board_item (board_id, content_id);
 | 타입 | slot_no 결정 방식 |
 |---|---|
 | `USER_CUSTOM` | 사용자가 배치 |
-| `AI_RECOMMEND` | Qdrant 유사도 순 (1위 → slot 1) |
+| `TASTE_RECOMMEND` | Qdrant 유사도 순 (1위 → slot 1) |
 | `PRE_MADE` | 운영자가 정한 순서 |
 
 nullable로 두면 조회 시 정렬 기준이 사라져 순서가 매번 달라진다. 값이 없는 보드를 허용하지 않는다.
@@ -118,7 +118,7 @@ nullable로 두면 조회 시 정렬 기준이 사라져 순서가 매번 달라
 
 | 필드 | 규칙 |
 |---|---|
-| `board_type` | `PRE_MADE` / `AI_RECOMMEND` / `USER_CUSTOM` 3종. **`SEARCH`는 별도 타입이 아니라 `AI_RECOMMEND`에 통합** (3-2 참고). → 2026-10-27 결정으로 **`SEARCH_RECOMMEND` 추가** (11장) |
+| `board_type` | `PRE_MADE` / `TASTE_RECOMMEND` / `USER_CUSTOM` 3종. **`SEARCH`는 별도 타입이 아니라 `TASTE_RECOMMEND`에 통합** (3-2 참고). → 2026-10-27 결정으로 **`SEARCH_RECOMMEND` 추가** (11장). 2026-11-05에 홈 추천 보드 이름을 `AI_RECOMMEND` → **`TASTE_RECOMMEND`**로 바꿨다 — 검색 보드도 AI가 만들어 `AI_`로는 구분이 안 되고, 취향 벡터로 고른 보드라는 뜻이다 |
 | `user_id` | `USER_CUSTOM`일 때만 값. 나머지는 NULL(= 전역 공용, 소유자 없음). → 2026-10-27 결정: 삭제된 `USER_CUSTOM`도 NULL (11-6) |
 | `visibility` | `USER_CUSTOM`만 `PRIVATE` 선택 가능. 기본은 `PUBLIC`. 나머지 타입은 항상 `PUBLIC` |
 | `content_signature` | 콘텐츠 8건의 id를 **오름차순 정렬해 콤마로 이은 문자열**. 해시하지 않음 (3-1). 보드 수정이 가능하므로 불변이 아니다 — 콘텐츠가 바뀌면 반드시 재계산 (9-4) |
@@ -129,8 +129,8 @@ nullable로 두면 조회 시 정렬 기준이 사라져 순서가 매번 달라
 | 종류 | `board_type` | `user_id` | `visibility` | 저장 시점 |
 |---|---|---|---|---|
 | 서비스 초기 큐레이션 | `PRE_MADE` | NULL | PUBLIC | 운영 시작 전 미리 |
-| 사용자 벡터 기반 추천 | `AI_RECOMMEND` | NULL | PUBLIC | **좋아요 받을 때만** |
-| 검색어 기반 보드 | `AI_RECOMMEND` → **`SEARCH_RECOMMEND`** (11장) | NULL | PUBLIC | **좋아요 받을 때만** |
+| 사용자 벡터 기반 추천 | `TASTE_RECOMMEND` | NULL | PUBLIC | **좋아요 받을 때만** |
+| 검색어 기반 보드 | `TASTE_RECOMMEND` → **`SEARCH_RECOMMEND`** (11장) | NULL | PUBLIC | **좋아요 받을 때만** |
 | 사용자 제작 | `USER_CUSTOM` | 만든 사용자 | 사용자 선택 | 생성 즉시 |
 | 좋아요 많이 받은 보드 | — | — | — | 별도 종류가 아니라 **위 보드들의 `like_count` 정렬 결과** |
 
@@ -151,7 +151,7 @@ content_signature = "12,45,88,102,377,891,1204,2038"
 `bigint` 최대 19자리 × 8 + 구분자 7 = 159자이므로 `VARCHAR(160)`이면 어떤 경우에도 안전하다.
 (현재 데이터는 book 12만 + movie 4만 + music 190만 ≈ 206만 건이라 7자리씩, 실제로는 64자 내외)
 
-해시를 피한 이유는 하나다. **`AI_RECOMMEND`에 unique 제약이 걸려 있어서, 해시가 충돌하면
+해시를 피한 이유는 하나다. **`TASTE_RECOMMEND`에 unique 제약이 걸려 있어서, 해시가 충돌하면
 콘텐츠가 다른 두 보드가 잘못 병합된다.** raw 문자열이면 충돌이 원천적으로 0이고,
 디버깅할 때 눈으로 읽을 수 있다는 덤도 있다.
 
@@ -168,7 +168,7 @@ content_signature = "12,45,88,102,377,891,1204,2038"
 
 ### 3-2. 제목(query)을 signature에 넣지 않는 이유
 
-`SEARCH`를 `AI_RECOMMEND`에 통합하면서 "제목이 출처별로 다른데 행은 하나뿐"이라는 문제를
+`SEARCH`를 `TASTE_RECOMMEND`에 통합하면서 "제목이 출처별로 다른데 행은 하나뿐"이라는 문제를
 검토했으나, **제목 정책(4장) 자체가 이 문제를 해소한다.** 제목이 콘텐츠 8건에서 결정론적으로
 파생되므로 같은 콘텐츠면 어느 경로로 들어와도 같은 제목이 나온다.
 
@@ -194,10 +194,10 @@ signature에 query 포함 → "1,..,8|모던재즈입문" ≠ "1,..,8|재즈명�
 
 | 대상 | 동일 signature 허용? | 근거 |
 |---|---|---|
-| `AI_RECOMMEND` 내부 | **불가** (전역 unique) | 소유자가 없는 전역 공용 보드다. 하나로 모아야 좋아요가 분산되지 않는다 |
+| `TASTE_RECOMMEND` 내부 | **불가** (전역 unique) | 소유자가 없는 전역 공용 보드다. 하나로 모아야 좋아요가 분산되지 않는다 |
 | `USER_CUSTOM` — 같은 사용자 | **불가** (사용자별 unique) | 한 사람이 같은 구성의 보드를 여러 개 가질 이유가 없다 |
 | `USER_CUSTOM` — 다른 사용자 | 허용 | 사용자 창작물이다. 콘텐츠가 같아도 제목·의도가 다른 별개의 물건이다 |
-| 타입 간 (`USER_CUSTOM` ↔ `AI_RECOMMEND` ↔ `PRE_MADE`) | 허용 | 병합하면 **소유권이 전염된다**(아래) |
+| 타입 간 (`USER_CUSTOM` ↔ `TASTE_RECOMMEND` ↔ `PRE_MADE`) | 허용 | 병합하면 **소유권이 전염된다**(아래) |
 
 **타입 간 병합을 하지 않는 결정적 이유:**
 
@@ -208,7 +208,7 @@ A가 보드를 PRIVATE로 전환하거나 삭제
   → B가 좋아요한 보드가 B의 목록에서 사라진다
 ```
 
-전역 공용이어야 할 `AI_RECOMMEND` 보드가 A 한 사람의 처분에 종속된다.
+전역 공용이어야 할 `TASTE_RECOMMEND` 보드가 A 한 사람의 처분에 종속된다.
 **콘텐츠 구성이 같다고 해서 같은 보드가 아니다.**
 
 ---
@@ -218,8 +218,8 @@ A가 보드를 PRIVATE로 전환하거나 삭제
 | 종류 | 제목 |
 |---|---|
 | `USER_CUSTOM` | 사용자가 직접 작성. 변경하지 않고 유지할 수도 있음 |
-| `AI_RECOMMEND` (추천 보드) | 취향 벡터와 가까운 `query` 중 **서로 다른 것을 먼저 고르고**, 그 제목에 맞는 콘텐츠를 담는다 (Qdrant `query_vector` 컬렉션, 2026-10-27 변경) |
-| `AI_RECOMMEND` (검색 보드) → `SEARCH_RECOMMEND` | 사용자가 입력한 **검색어 그대로** (NFC 변환과 앞뒤 공백 제거만, 11-3) |
+| `TASTE_RECOMMEND` (추천 보드) | 취향 벡터와 가까운 `query` 중 **서로 다른 것을 먼저 고르고**, 그 제목에 맞는 콘텐츠를 담는다 (Qdrant `query_vector` 컬렉션, 2026-10-27 변경) |
+| `TASTE_RECOMMEND` (검색 보드) → `SEARCH_RECOMMEND` | 사용자가 입력한 **검색어 그대로** (NFC 변환과 앞뒤 공백 제거만, 11-3) |
 | `PRE_MADE` | 운영자가 작성 |
 
 `query`와 `query_vector`는 AI 개발자가 서비스 운영 전에 Qdrant에 적재한다.
@@ -288,7 +288,7 @@ SELECT ... FROM board
 
 같은 signature가 둘 이상 뽑혔을 때만 적용한다. 세 단계로 판단한다.
 
-1. **타입 우선순위** — `USER_CUSTOM` > `AI_RECOMMEND` > `PRE_MADE`.
+1. **타입 우선순위** — `USER_CUSTOM` > `TASTE_RECOMMEND` > `PRE_MADE`.
    사용자 창작물이 알고리즘·운영자 보드보다 앞선다. 좋아요 수와 무관하게 이 단계가 먼저다.
 2. **같은 타입이면 좋아요가 많은 쪽.** 인기 보드 목록에서 적게 받은 쪽을 남길 이유가 없다.
 3. **좋아요까지 같으면 먼저 만들어진 쪽**(`id`가 작은 쪽).
@@ -297,7 +297,7 @@ SELECT ... FROM board
 > 호출하는 쪽의 정렬이 바뀌면 조용히 다른 보드가 뽑히기 때문이다.
 
 > 이 우선순위는 **뽑힌 16개 안에서만** 적용된다. top-16 밖의 보드를 끌어올리지 않는다.
-> 즉 좋아요가 압도적인 `AI_RECOMMEND` 보드 A만 목록에 들고 같은 콘텐츠의 `USER_CUSTOM` 보드 B가
+> 즉 좋아요가 압도적인 `TASTE_RECOMMEND` 보드 A만 목록에 들고 같은 콘텐츠의 `USER_CUSTOM` 보드 B가
 > 밖에 있다면, A를 빼고 B를 넣지 않는다. A가 그대로 남는다.
 
 ### 5-2. `LIMIT 16`인 이유
@@ -361,13 +361,13 @@ SQL의 `ORDER BY`는 지정한 컬럼이 모두 같은 행들 사이의 순서�
 | 종류 | 저장 |
 |---|---|
 | `USER_CUSTOM` | 좋아요와 무관하게 **생성 즉시** |
-| `AI_RECOMMEND` | **좋아요를 받은 시점에만** |
+| `TASTE_RECOMMEND` | **좋아요를 받은 시점에만** |
 | `PRE_MADE` | 운영 시작 전 미리 |
 
-`AI_RECOMMEND`를 미리 저장하지 않는 이유는 저장공간이다. 사용자 1만 명에게 매일 보드를
+`TASTE_RECOMMEND`를 미리 저장하지 않는 이유는 저장공간이다. 사용자 1만 명에게 매일 보드를
 저장하면 `board` 연 365만 행, `board_item` 연 2,920만 행인데 그중 좋아요를 받는 것은 극소수다.
 
-> **2026-10-27 결정으로 바뀌었다:** `AI_RECOMMEND`와 `SEARCH_RECOMMEND`는 좋아요가 0이 되면
+> **2026-10-27 결정으로 바뀌었다:** `TASTE_RECOMMEND`와 `SEARCH_RECOMMEND`는 좋아요가 0이 되면
 > **완전 삭제**한다. 아래 문단은 이전 결정과 그 근거다. 11-6 참고.
 
 **좋아요가 0이 되어도 행은 유지한다.** soft delete하면 unique 인덱스의 `deleted_at IS NULL`
@@ -390,7 +390,7 @@ SQL의 `ORDER BY`는 지정한 컬럼이 모두 같은 행들 사이의 순서�
 > 순서·제목만 바꾼 경우에는 구성이 원본과 같아 결과가 사본에 가깝지만, 동작은 같으므로 같은 이름을 쓴다.
 
 콘텐츠를 바꾸든 순서만 바꾸든 판단 기준은 같다 — **원본에 소유자가 있는가.**
-`AI_RECOMMEND`와 `PRE_MADE`는 `user_id = NULL`인 전역 공용 보드라, 한 사용자가 순서를 바꾸면
+`TASTE_RECOMMEND`와 `PRE_MADE`는 `user_id = NULL`인 전역 공용 보드라, 한 사용자가 순서를 바꾸면
 그 보드를 좋아요한 다른 모든 사용자의 화면이 함께 바뀐다. 콘텐츠 교체와 똑같은 소유권 전염이다.
 
 순서만 바꿔 새로 저장하면 새 보드의 `content_signature`가 원본과 **같다.** 그래도 저장에 문제가 없다.
@@ -402,11 +402,11 @@ unique 인덱스가 타입별로 분리돼 있어(`uk_board_ai_signature` / `uk_
 
 ### 9-1. 왜 in-place 전환이 아니라 새로 저장인가
 
-`AI_RECOMMEND`와 `PRE_MADE`는 `user_id = NULL`인 **전역 공용** 보드다. 여러 사용자가 좋아요를
+`TASTE_RECOMMEND`와 `PRE_MADE`는 `user_id = NULL`인 **전역 공용** 보드다. 여러 사용자가 좋아요를
 눌렀을 수 있다. `board_type`을 `USER_CUSTOM`으로 바꾸고 `user_id`를 채우는 방식이라면:
 
 ```
-AI_RECOMMEND 보드 42 (signature "1..8", likeCount=40)  ← 40명이 좋아요
+TASTE_RECOMMEND 보드 42 (signature "1..8", likeCount=40)  ← 40명이 좋아요
 사용자 A가 콘텐츠 1건 교체 → in-place 전환
 
   → 40명이 좋아요한 공용 보드가 A의 개인 보드로 변신한다
@@ -497,7 +497,7 @@ PUT /api/boards/{boardId}/contents
 | `entity/board/Board.java` | `user` 필드 주석이 서로 모순 ("PRE_MADE는 null 허용" vs "USER_CUSTOM만 null") | `visibility`, `content_signature` 추가. 소유 규칙을 CHECK 제약으로 이관 |
 | `entity/board/Board.java` | `addContent()` / `removeContent()` — 8건 규칙이 깨지는 경로 | `replaceContents(List<Content>)`로 대체. 8건 검증 + signature 재계산 (9-3, 9-4) |
 | 신규 | — | 보드 수정 API `PUT /api/boards/{boardId}/contents`. 원본 타입에 따라 in-place / 내 보드로 새로 저장 분기 (9장) |
-| `enumData/BoardType.java` | `USER_CUSTOM, AI_RECOMMEND, PRE_MADE` | 그대로 (SEARCH 추가하지 않음) → 2026-10-27 결정으로 `SEARCH_RECOMMEND` 추가 (11장) |
+| `enumData/BoardType.java` | `USER_CUSTOM, TASTE_RECOMMEND, PRE_MADE` | 그대로 (SEARCH 추가하지 않음) → 2026-10-27 결정으로 `SEARCH_RECOMMEND` 추가 (11장) |
 | `repository/BoardRepository.java` | `findByDeletedAtIsNullOrderByLikeCountDesc` — 정렬 기준이 `like_count` 하나, `visibility` 필터 없음 | `visibility='PUBLIC'` 필터 + `ORDER BY like_count DESC, id ASC` + `LIMIT 16` |
 | `service/BoardService.java` | `likeNewBoard()`가 중복 검사 없이 무조건 `save()` | signature로 기존 보드 조회 후 있으면 좋아요만, 없으면 저장 |
 | `service/SearchService.java` | `BoardWithContentsDto.unsaved()` 하드코딩 — 항상 `boardId=null, likeCount=0, liked=false` | signature로 기존 보드 조회해 `boardId`·`likeCount`·`liked` 복원 |
@@ -564,9 +564,9 @@ PUT /api/boards/{boardId}/contents
 3번을 건너뛰면 4번의 unique 인덱스 생성이 실패한다.
 
 ```sql
--- 중복 AI_RECOMMEND 보드
+-- 중복 TASTE_RECOMMEND 보드
 SELECT content_signature, count(*) FROM board
- WHERE board_type = 'AI_RECOMMEND' AND deleted_at IS NULL
+ WHERE board_type = 'TASTE_RECOMMEND' AND deleted_at IS NULL
  GROUP BY content_signature HAVING count(*) > 1;
 
 -- 한 보드에 같은 콘텐츠가 두 번 들어간 경우
@@ -586,7 +586,7 @@ SELECT board_id, content_id, count(*) FROM board_item
 
 | 안 | 버린 이유 |
 |---|---|
-| 화면 제목만 검색어, 저장은 지금처럼 `AI_RECOMMEND` + query 제목 | 사용자가 본 제목과 보관함·인기 목록의 제목이 달라진다. 검색어를 남기려는 의도를 살리지 못한다 |
+| 화면 제목만 검색어, 저장은 지금처럼 `TASTE_RECOMMEND` + query 제목 | 사용자가 본 제목과 보관함·인기 목록의 제목이 달라진다. 검색어를 남기려는 의도를 살리지 못한다 |
 | 좋아요하면 그 사용자의 `USER_CUSTOM`으로 저장 | 같은 검색어라도 사람마다 AI를 다시 부르고 보드가 따로 쌓인다. 사용자가 만든 보드가 아니라 `USER_CUSTOM`이라는 이름과 맞지 않는다 |
 | 검색어(제목) 하나로 전역 unique, 저장된 보드가 있으면 AI를 부르지 않음 | 처음 좋아요한 사람의 결과로 그 검색어가 고정된다. 요청을 조작하면 모든 사람의 검색 결과를 바꿀 수 있다 |
 | Redis에 검색어별 결과를 두고 좋아요 요청을 대조 | 캐시가 만료되고 다른 사람이 같은 검색어로 다시 채우면, 정상 사용자의 좋아요가 불일치로 거절된다 |
@@ -617,7 +617,7 @@ JPQL은 enum을 파라미터로 바꿔 부분 인덱스를 쓰지 못한다(V3 �
 새로 추천된 보드이고, unique 인덱스도 타입별로 따로라 충돌하지 않는다. 검색 보드를 수정해 같은 제목·구성의
 내 `USER_CUSTOM`으로 새로 저장되는 것도 허용된다. 인기 목록에서는 구성이 같으면 `USER_CUSTOM`이 남는다(11-7).
 
-이미 `AI_RECOMMEND`로 저장된 예전 검색 보드는 홈 추천 보드와 구분할 출처 정보가 없어 그대로 둔다.
+이미 `TASTE_RECOMMEND`로 저장된 예전 검색 보드는 홈 추천 보드와 구분할 출처 정보가 없어 그대로 둔다.
 
 ### 11-3. 제목 비교 규칙
 
@@ -665,7 +665,7 @@ token   = base64url(payload) + "." + base64url(HMAC-SHA256(서버 비밀 키, pa
 
 `ON CONFLICT`를 쓰는 이유: 두 사람이 동시에 처음 좋아요하면 둘 다 "없음"을 보고 저장한다. 예외를 잡아 다시 조회하는
 방식은 PostgreSQL이 오류 난 트랜잭션을 이어 가지 못해 같은 트랜잭션에서 동작하지 않는다.
-홈 추천 `AI_RECOMMEND`의 `likeNewBoard`에도 같은 경합이 있어 함께 바꾼다.
+홈 추천 `TASTE_RECOMMEND`의 `likeNewBoard`에도 같은 경합이 있어 함께 바꾼다.
 
 AI 호출과 Qdrant 조회는 트랜잭션 밖에서 한다(2026-10-04 부하 측정에서 커넥션 풀이 막혔던 원인).
 
@@ -692,7 +692,7 @@ CREATE UNIQUE INDEX uk_board_user_title_signature
 
 | 종류 | 누가 | 방식 |
 |---|---|---|
-| `AI_RECOMMEND` | 좋아요가 0이 되는 순간 자동 | 완전 삭제 |
+| `TASTE_RECOMMEND` | 좋아요가 0이 되는 순간 자동 | 완전 삭제 |
 | `SEARCH_RECOMMEND` | 좋아요가 0이 되는 순간 자동 | 완전 삭제 |
 | `USER_CUSTOM` | 만든 사용자가 보관함에서 **삭제를 눌렀을 때만** | ① 본인 좋아요 제거 → ② 남은 좋아요가 있으면 소프트 삭제(`user_id = NULL`, `deleted_at` 기록), 없으면 바로 완전 삭제 → ③ 이후 마지막 좋아요가 취소되면 완전 삭제 |
 | 사용자 계정 | — | 소프트 삭제 (기존대로) |
@@ -730,7 +730,7 @@ CREATE UNIQUE INDEX uk_board_user_title_signature
 **완전 삭제 절차** — 외래 키에 `ON DELETE CASCADE`를 걸지 않는다.
 
 1. 보드 행을 잠근다 (`SELECT ... FOR UPDATE`)
-2. `like_count = 0`이고 `board_type = 'AI_RECOMMEND' OR 'SEARCH_RECOMMEND' OR deleted_at IS NOT NULL`인지 확인
+2. `like_count = 0`이고 `board_type = 'TASTE_RECOMMEND' OR 'SEARCH_RECOMMEND' OR deleted_at IS NOT NULL`인지 확인
 3. `board_item` 삭제
 4. `board` 삭제
 
@@ -747,7 +747,7 @@ CREATE UNIQUE INDEX uk_board_user_title_signature
 
 | 경우 | 순서 |
 |---|---|
-| 구성이 다른 보드끼리 | 좋아요 수 → 타입(`USER_CUSTOM` > `SEARCH_RECOMMEND` > `AI_RECOMMEND`) → `id` (생성 순서) |
+| 구성이 다른 보드끼리 | 좋아요 수 → 타입(`USER_CUSTOM` > `SEARCH_RECOMMEND` > `TASTE_RECOMMEND`) → `id` (생성 순서) |
 | 구성이 같은 보드끼리 (하나만 남김) | 타입(같은 순서, 좋아요 수와 무관) → 좋아요 수 → `id` |
 
 - 구성이 다를 때 타입이 좋아요 다음 기준으로 끼어들므로 `ORDER BY like_count DESC, <타입 순위>, id`가 되고,
@@ -848,7 +848,7 @@ constraint ck_board_item_layout_range check (
 - 운영 전이라 `V3__BoardSchema.sql`을 최종 모양으로 고치고 운영 DB를 초기화해 다시 적재한다(11-9와 같은 절차, 이미지 연결 보존 포함).
 - **NULL = 프론트의 기본 배치.** 기본 배치 값(칸별 위치·기울기)은 프론트 상수에만 둔다. DB에 복사하면 기본 배치를 다듬을 때
   이미 저장된 보드가 옛 모양으로 남는다.
-- `AI_RECOMMEND`·`SEARCH_RECOMMEND`·`PRE_MADE`는 서버가 **항상 NULL**로 저장한다. `board_type`이 다른 테이블에 있어
+- `TASTE_RECOMMEND`·`SEARCH_RECOMMEND`·`PRE_MADE`는 서버가 **항상 NULL**로 저장한다. `board_type`이 다른 테이블에 있어
   DB 제약으로는 걸 수 없으므로 서버 코드가 지킨다.
 - **보드 단위로 전부 있거나 전부 NULL이다.** 하나만 옮겼어도 8칸 모두의 현재 위치를 저장한다. 옮긴 칸만 저장하면 기본 배치가
   바뀌었을 때 나머지만 움직여 서로 겹친다. 칸 안의 네 값은 DB가, 8칸 전체는 `Board.replaceContents`가 검사한다.

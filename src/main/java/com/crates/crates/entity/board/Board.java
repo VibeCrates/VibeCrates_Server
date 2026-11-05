@@ -39,7 +39,7 @@ public class Board {
     /**
      * 이 보드가 귀속되는 사용자.
      *
-     * <p>살아 있는 USER_CUSTOM일 때만 값이 있다. AI_RECOMMEND·SEARCH_RECOMMEND는 소유자가 없는 전역 공용 보드라
+     * <p>살아 있는 USER_CUSTOM일 때만 값이 있다. TASTE_RECOMMEND·SEARCH_RECOMMEND는 소유자가 없는 전역 공용 보드라
      * null이며, 그래서 한 사용자가 그 보드를 고쳐도 다른 사용자에게 영향이 가지 않도록
      * 원본을 고치지 않고 그 사람의 보드로 새로 저장한다. 주인이 지운 USER_CUSTOM도 null이다(BoardRepository.softDelete).
      * 이 규칙은 ck_board_owner(V3)가 DB에서 강제한다.</p>
@@ -62,7 +62,7 @@ public class Board {
      * 콘텐츠 8건의 id를 오름차순 정렬해 콤마로 이은 문자열. 이 보드의 "내용 정체성"이다.
      *
      * <p>정렬하므로 배치 순서(slotNo)가 바뀌어도 값이 변하지 않는다. 즉 순서만 바꾼 수정은
-     * 새 보드를 만들지 않는다. 해시하지 않는 이유는, AI_RECOMMEND에 unique 제약이 걸려 있어
+     * 새 보드를 만들지 않는다. 해시하지 않는 이유는, TASTE_RECOMMEND에 unique 제약이 걸려 있어
      * 해시 충돌이 곧 서로 다른 보드의 오병합이 되기 때문이다.</p>
      */
     @Column(nullable = false, length = 160)
