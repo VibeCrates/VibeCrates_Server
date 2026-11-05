@@ -56,6 +56,23 @@ class BoardLikeTokenServiceTest {
     }
 
     @Test
+    @DisplayName("용도를 가리지 않는 검증은 어느 화면의 토큰인지 알려 주고, 서명이 틀리면 거절한다")
+    void verifyAnyTellsPurpose()
+    {
+        BoardLikeTokenService service = service(SECRET, "");
+
+        assertEquals(SEARCH, service.verifyAny(service.issue(SEARCH, "재즈", CONTENT_IDS)).purpose());
+        BoardLikeTokenService.Verified recommended = service.verifyAny(service.issue(RECOMMEND, "새벽", CONTENT_IDS));
+        assertEquals(RECOMMEND, recommended.purpose());
+        assertEquals("새벽", recommended.title());
+        assertEquals(CONTENT_IDS, recommended.contentIds());
+
+        String otherKeyToken = service(OTHER_SECRET, "").issue(SEARCH, "재즈", CONTENT_IDS);
+        assertThrows(BusinessException.class, () -> service.verifyAny(otherKeyToken));
+        assertThrows(BusinessException.class, () -> service.verifyAny("not-a-token"));
+    }
+
+    @Test
     @DisplayName("다른 키로 만든 토큰은 거절한다")
     void rejectsOtherKey()
     {

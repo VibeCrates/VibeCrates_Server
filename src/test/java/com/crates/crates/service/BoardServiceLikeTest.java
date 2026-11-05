@@ -1,5 +1,6 @@
 package com.crates.crates.service;
 
+import com.crates.crates.DTO.BoardCaptureRequest;
 import com.crates.crates.DTO.BoardLikeResponse;
 import com.crates.crates.DTO.BoardSaveRequest;
 import com.crates.crates.DTO.SlotLayoutDto;
@@ -16,6 +17,7 @@ import com.crates.crates.repository.BoardItemRepository;
 import com.crates.crates.repository.BoardRepository;
 import com.crates.crates.repository.ContentRepository;
 import com.crates.crates.repository.UserRepository;
+import com.crates.crates.service.UserEventLogger.BoardSnapshot;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -34,6 +36,7 @@ import java.util.stream.LongStream;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -61,6 +64,8 @@ class BoardServiceLikeTest {
     @Mock private UserRepository userRepository;
     @Mock private ContentService contentService;
     @Mock private ApplicationEventPublisher eventPublisher;
+    @Mock private BoardLikeTokenService boardLikeTokenService;
+    @Mock private UserEventLogger userEventLogger;
 
     @InjectMocks private BoardService service;
 
@@ -90,6 +95,7 @@ class BoardServiceLikeTest {
 
             assertTrue(e.getMessage().startsWith("삭제된 보드입니다."));
             verify(boardFeedbackRepository, never()).save(any());
+            verify(userEventLogger, never()).boardLiked(any(), any());
         }
 
         @Test
@@ -101,9 +107,10 @@ class BoardServiceLikeTest {
 
             BoardLikeResponse response = service.like(BOARD_ID, USER_ID);
 
-            var order = inOrder(boardRepository, boardFeedbackRepository);
+            var order = inOrder(boardRepository, boardFeedbackRepository, userEventLogger);
             order.verify(boardRepository).incrementLikeCount(BOARD_ID);
             order.verify(boardFeedbackRepository).save(any());
+            order.verify(userEventLogger).boardLiked(eq(USER_ID), any());
             assertEquals(new BoardLikeResponse(BOARD_ID, 3L, true), response);
         }
     }
@@ -121,8 +128,10 @@ class BoardServiceLikeTest {
 
             BoardLikeResponse response = service.unlike(BOARD_ID, USER_ID);
 
-            var order = inOrder(boardRepository, boardItemRepository);
+            var order = inOrder(boardRepository, boardItemRepository, userEventLogger);
             order.verify(boardRepository).decrementLikeCount(BOARD_ID);
+            // 보드가 지워지기 전에 제목·아이템을 적는다.
+            order.verify(userEventLogger).boardUnliked(eq(USER_ID), any());
             order.verify(boardItemRepository).deleteItemsIfUnliked(BOARD_ID);
             order.verify(boardRepository).deleteIfUnliked(BOARD_ID);
             assertEquals(new BoardLikeResponse(null, 0L, false), response);
@@ -148,6 +157,7 @@ class BoardServiceLikeTest {
 
             assertEquals(new BoardLikeResponse(null, 0L, false), service.unlike(BOARD_ID, USER_ID));
             verify(boardRepository, never()).deleteIfUnliked(anyLong());
+            verify(userEventLogger, never()).boardUnliked(any(), any());
         }
     }
 
@@ -248,6 +258,23 @@ class BoardServiceLikeTest {
             order.verify(boardRepository).softDelete(eq(BOARD_ID), any());
             order.verify(boardItemRepository).deleteItemsIfUnliked(BOARD_ID);
             order.verify(boardRepository).deleteIfUnliked(BOARD_ID);
+            // 좋아요 취소와 보드 삭제를 각각 적는다(docs/board-schema.md 13-3).
+            verify(userEventLogger).boardUnliked(eq(USER_ID), any());
+            verify(userEventLogger).boardDeleted(eq(USER_ID), any());
+        }
+
+        @Test
+        @DisplayName("좋아요하지 않은 내 보드를 지우면 삭제만 적는다")
+        void deleteWithoutOwnLikeLogsOnlyDelete()
+        {
+            Board mine = userBoard(BOARD_ID, user(USER_ID));
+            when(boardRepository.findByIdForUpdate(BOARD_ID)).thenReturn(Optional.of(mine));
+            when(boardFeedbackRepository.deleteFeedback(BOARD_ID, USER_ID, Rating.LIKE)).thenReturn(0);
+
+            service.deleteUserBoard(BOARD_ID, USER_ID);
+
+            verify(userEventLogger, never()).boardUnliked(any(), any());
+            verify(userEventLogger).boardDeleted(USER_ID, new BoardSnapshot(BOARD_ID, BoardType.USER_CUSTOM, "t", List.of()));
         }
     }
 
@@ -300,6 +327,83 @@ class BoardServiceLikeTest {
 
         assertEquals(LAYOUT, saved.layout());
         assertTrue(others.getBoardItems().isEmpty());   // 원본은 건드리지 않았다
+    }
+
+    @Nested
+    @DisplayName("행동 로그(docs/board-schema.md 13장)")
+    class EventLog {
+
+        @Test
+        @DisplayName("내 보드를 고치면 고치기 전 제목·구성을 원래 상태로 적는다")
+        void editLogsStateBeforeReplacing()
+        {
+            Board mine = filledUserBoard(BOARD_ID, user(USER_ID));
+            when(boardRepository.findById(BOARD_ID)).thenReturn(Optional.of(mine));
+
+            service.updateBoard(BOARD_ID, new BoardSaveRequest(" 새 제목 ", CONTENT_IDS.reversed()), USER_ID);
+
+            verify(userEventLogger).boardEdited(USER_ID,
+                    new BoardSnapshot(BOARD_ID, BoardType.USER_CUSTOM, "t", CONTENT_IDS),
+                    BOARD_ID, "새 제목", CONTENT_IDS.reversed());
+        }
+
+        @Test
+        @DisplayName("저장 전 보드를 고쳐 만들면 원래 상태를 요청이 아니라 원본 토큰에서 꺼낸다")
+        void createLogsOriginFromToken()
+        {
+            when(boardLikeTokenService.verifyAny("token"))
+                    .thenReturn(new BoardLikeTokenService.Verified("재즈", CONTENT_IDS, BoardLikeTokenService.Purpose.SEARCH));
+
+            service.createUserBoard(new BoardSaveRequest("새벽", CONTENT_IDS, null, "token"), USER_ID);
+
+            verify(userEventLogger).boardEdited(eq(USER_ID),
+                    eq(new BoardSnapshot(null, BoardType.SEARCH_RECOMMEND, "재즈", CONTENT_IDS)),
+                    any(), eq("새벽"), eq(CONTENT_IDS));
+        }
+
+        @Test
+        @DisplayName("원본 토큰이 틀리면 보드를 저장하지 않는다")
+        void createRejectsInvalidOriginToken()
+        {
+            when(boardLikeTokenService.verifyAny("forged")).thenThrow(new BusinessException("보드를 확인할 수 없습니다."));
+
+            assertThrows(BusinessException.class,
+                    () -> service.createUserBoard(new BoardSaveRequest("새벽", CONTENT_IDS, null, "forged"), USER_ID));
+            verify(boardRepository, never()).save(any(Board.class));
+        }
+
+        @Test
+        @DisplayName("사진 저장은 화면이 원래 보드와 같으면 edited=false, 다르면 true로 적는다")
+        void captureMarksEdited()
+        {
+            Board saved = filledUserBoard(BOARD_ID, user(99L));
+            when(boardRepository.findById(BOARD_ID)).thenReturn(Optional.of(saved));
+
+            service.logBoardCapture(new BoardCaptureRequest(BOARD_ID, null, "t", CONTENT_IDS), USER_ID);
+            verify(userEventLogger).boardCaptured(USER_ID,
+                    new BoardSnapshot(BOARD_ID, BoardType.USER_CUSTOM, "t", CONTENT_IDS), false);
+
+            service.logBoardCapture(new BoardCaptureRequest(BOARD_ID, null, "다른 제목", CONTENT_IDS), USER_ID);
+            verify(userEventLogger).boardCaptured(USER_ID,
+                    new BoardSnapshot(BOARD_ID, BoardType.USER_CUSTOM, "다른 제목", CONTENT_IDS), true);
+        }
+
+        @Test
+        @DisplayName("사진 저장에 원래 보드(boardId·토큰)가 없으면 거절한다")
+        void captureNeedsOrigin()
+        {
+            assertThrows(BusinessException.class,
+                    () -> service.logBoardCapture(new BoardCaptureRequest(null, null, "t", CONTENT_IDS), USER_ID));
+            verify(userEventLogger, never()).boardCaptured(any(), any(), anyBoolean());
+        }
+    }
+
+    /** 콘텐츠 8건(CONTENT_IDS 순서)이 담긴 사용자 보드. */
+    private static Board filledUserBoard(Long id, User owner)
+    {
+        Board board = userBoard(id, owner);
+        board.replaceContents(CONTENT_IDS.stream().map(BoardServiceLikeTest::content).toList(), null);
+        return board;
     }
 
     private static Board board(Long id, BoardType type)

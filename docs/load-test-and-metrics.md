@@ -872,6 +872,10 @@ Prometheus 레지스트리는 없어 `/actuator/metrics` 인메모리 조회만 
 - `EventType`: `CLICK_BOARD`, `CLICK_CONTENT`, `UPDATE_BOARD`, `LIKE_BOARD`
 - `SystemLogRepository`는 존재하지만 **어디서도 주입되지 않는다**
 
+> 2026-11-05: 이 자리를 사용자 행동 로그 `user_event_log`(`UserEventLog`, `UserEventType`)로 바꿨다(board-schema.md 13장).
+> 지금 쌓는 것은 좋아요·좋아요 취소·보드 삭제·보드 수정·사진 저장이다. **추천 노출은 아직 쌓지 않는다** — 온라인 지표의 분모가 필요해지면
+> `UserEventType`에 노출 이벤트를 더한다.
+
 `userId`를 연관관계가 아니라 raw id로 들고 있어 탈퇴 후에도 남고, payload가 jsonb라 확장된다.
 설계는 끝났고 배선만 빠졌다. AI 서버 연결 **전에** 해두어야 연결 직후부터 비교할 데이터가 쌓인다.
 

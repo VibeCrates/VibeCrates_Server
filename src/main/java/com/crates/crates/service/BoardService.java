@@ -1,5 +1,6 @@
 package com.crates.crates.service;
 
+import com.crates.crates.DTO.BoardCaptureRequest;
 import com.crates.crates.DTO.BoardItemRowDto;
 import com.crates.crates.DTO.BoardLikeResponse;
 import com.crates.crates.DTO.BoardSaveRequest;
@@ -11,6 +12,7 @@ import com.crates.crates.Global.exception.DuplicateBoardException;
 import com.crates.crates.Global.exception.BusinessException;
 import com.crates.crates.entity.board.Board;
 import com.crates.crates.entity.board.BoardFeedback;
+import com.crates.crates.entity.board.BoardItem;
 import com.crates.crates.entity.board.ItemLayout;
 import com.crates.crates.entity.contents.Content;
 import com.crates.crates.entity.user.User;
@@ -24,6 +26,7 @@ import com.crates.crates.repository.BoardItemRepository;
 import com.crates.crates.repository.BoardRepository;
 import com.crates.crates.repository.ContentRepository;
 import com.crates.crates.repository.UserRepository;
+import com.crates.crates.service.UserEventLogger.BoardSnapshot;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
 import com.crates.crates.Global.paging.OffsetLimit;
@@ -62,6 +65,8 @@ public class BoardService {
     private final UserRepository userRepository;
     private final ContentService contentService;
     private final ApplicationEventPublisher eventPublisher;
+    private final BoardLikeTokenService boardLikeTokenService;
+    private final UserEventLogger userEventLogger;
 
     public BoardWithContentsDto getBoardWithContents(Long boardId, Long userId)
     {
@@ -80,6 +85,8 @@ public class BoardService {
     @Transactional
     public BoardWithContentsDto createUserBoard(BoardSaveRequest request, Long userId)
     {
+        // 원본 토큰이 틀렸으면 저장도 거절한다. 정상 사용자는 겪지 않고 요청을 조작했을 때만 생긴다.
+        BoardSnapshot source = originOf(request.originToken());
         List<Content> contents = validateAndLoadContents(request.contentIds());
         String title = Board.normalizeTitle(request.title());
         ensureNoDuplicateUserBoard(userId, Board.signatureOf(request.contentIds()), title, null);
@@ -88,6 +95,7 @@ public class BoardService {
         Board board = newUserBoard(owner, title);
         board.replaceContents(contents, SlotLayoutDto.toEntities(request.layout()));
         boardRepository.save(board);
+        userEventLogger.boardEdited(userId, source, board.getId(), title, request.contentIds());
 
         return toResponse(board, contentService.getContentSummaries(request.contentIds()), userId);
     }
@@ -118,6 +126,8 @@ public class BoardService {
         List<ItemLayout> layout = SlotLayoutDto.toEntities(request.layout());
 
         Board origin = findReadableBoard(boardId, userId);
+        // 고치기 전 상태. 그 자리에서 고치면 replaceContents가 원래 아이템을 지우므로 먼저 떠 둔다.
+        BoardSnapshot source = snapshotOf(origin);
 
         Board target;
         if (isEditableInPlace(origin, userId))
@@ -139,6 +149,7 @@ public class BoardService {
             ownBoard.replaceContents(contents, layout);
             target = boardRepository.save(ownBoard);
         }
+        userEventLogger.boardEdited(userId, source, target.getId(), title, request.contentIds());
 
         // 방금 넘긴 순서가 곧 slot 순서라, 다시 조회하지 않고 그대로 요약을 만든다.
         return toResponse(target, contentService.getContentSummaries(request.contentIds()), userId);
@@ -152,6 +163,71 @@ public class BoardService {
                     "보드에는 콘텐츠 " + Board.ITEMS_PER_BOARD + "건이 필요합니다. 요청: " + contentIds.size());
         }
         return findContentsInRequestOrder(contentIds);
+    }
+
+    /** 로그에 적을 보드의 지금 상태. 아이템은 칸 순서다(boardItems가 slotNo로 정렬돼 온다). */
+    private static BoardSnapshot snapshotOf(Board board)
+    {
+        List<Long> contentIds = board.getBoardItems().stream()
+                .map(BoardItem::getContent)
+                .map(Content::getId)   // 프록시여도 id만 읽으므로 콘텐츠를 조회하지 않는다
+                .toList();
+        return new BoardSnapshot(board.getId(), board.getBoardType(), board.getTitle(), contentIds);
+    }
+
+    /**
+     * 저장되지 않은 보드(홈 추천·검색 결과)의 원래 상태를 토큰에서 꺼낸다. 토큰이 없으면 처음부터 만든 보드다.
+     * 프론트가 보낸 "원래 목록"을 믿지 않으려고 서버가 서명한 값만 쓴다(docs/board-schema.md 13-4).
+     */
+    private BoardSnapshot originOf(String token)
+    {
+        if (token == null || token.isBlank())
+        {
+            return BoardSnapshot.none();
+        }
+        BoardLikeTokenService.Verified verified = boardLikeTokenService.verifyAny(token);
+        return new BoardSnapshot(null, boardTypeOf(verified.purpose()), verified.title(), verified.contentIds());
+    }
+
+    private static BoardType boardTypeOf(BoardLikeTokenService.Purpose purpose)
+    {
+        return switch (purpose)
+        {
+            case SEARCH -> BoardType.SEARCH_RECOMMEND;
+            case RECOMMEND -> BoardType.TASTE_RECOMMEND;
+        };
+    }
+
+    /**
+     * 보드 사진 저장을 행동 로그에 남긴다(docs/board-schema.md 13-5). 사용자가 "캡처하기"를 눌렀을 때만 온다.
+     *
+     * <p>사진은 화면 그대로라 저장하지 않은 편집 상태일 수 있다. 화면의 제목·구성을 적고, 원래 보드와 다르면
+     * edited로 표시한다. 원래 보드는 boardId면 DB에서, 아니면 토큰에서 읽는다 — 어느 쪽이든 서버가 확인한 값이다.</p>
+     */
+    @Transactional
+    public void logBoardCapture(BoardCaptureRequest request, Long userId)
+    {
+        BoardSnapshot origin;
+        if (request.boardId() != null)
+        {
+            origin = snapshotOf(findReadableBoard(request.boardId(), userId));
+        }
+        else if (request.likeToken() != null && !request.likeToken().isBlank())
+        {
+            origin = originOf(request.likeToken());
+        }
+        else
+        {
+            throw new BusinessException("사진으로 저장한 보드를 확인할 수 없습니다.");
+        }
+
+        // 없는 콘텐츠나 같은 콘텐츠가 두 번 섞였으면 거절한다. 로그에 가리킬 수 없는 작품이 남지 않게 한다.
+        List<Long> shownIds = findContentsInRequestOrder(request.contentIds()).stream().map(Content::getId).toList();
+        String shownTitle = Board.normalizeTitle(request.title());
+        boolean edited = !(shownTitle.equals(origin.title()) && shownIds.equals(origin.contentIds()));
+
+        userEventLogger.boardCaptured(userId,
+                new BoardSnapshot(origin.boardId(), origin.boardType(), shownTitle, shownIds), edited);
     }
 
     /** 내 USER_CUSTOM 보드만 그 자리에서 고칠 수 있다. */
@@ -382,7 +458,9 @@ public class BoardService {
         {
             return Optional.empty();
         }
-        saveFeedback(boardRepository.getReferenceById(boardId), userId);
+        Board board = boardRepository.getReferenceById(boardId);
+        saveFeedback(board, userId);
+        userEventLogger.boardLiked(userId, snapshotOf(board));
         publishLikeChanged(userId);
 
         return Optional.of(new BoardLikeResponse(boardId, currentLikeCount(boardId), true));
@@ -411,6 +489,8 @@ public class BoardService {
         }
 
         boardRepository.decrementLikeCount(boardId);
+        // 좋아요가 0이 되면 아래에서 보드가 지워진다. 지우기 전에 제목·아이템을 적는다.
+        userEventLogger.boardUnliked(userId, snapshotOf(boardRepository.getReferenceById(boardId)));
         publishLikeChanged(userId);
 
         if (deleteIfUnliked(boardId))
@@ -436,15 +516,20 @@ public class BoardService {
     @Transactional
     public void deleteUserBoard(Long boardId, Long userId)
     {
-        boardRepository.findByIdForUpdate(boardId)
-                .filter(board -> board.getBoardType() == BoardType.USER_CUSTOM && isOwnedBy(board, userId))
+        Board board = boardRepository.findByIdForUpdate(boardId)
+                .filter(found -> found.getBoardType() == BoardType.USER_CUSTOM && isOwnedBy(found, userId))
                 .orElseThrow(() -> new BusinessException("존재하지 않는 보드입니다. boardId: " + boardId));
+        // 아래 갱신 문장들이 영속성 컨텍스트를 비워 board가 준영속이 되므로, 아이템을 지금 읽어 둔다.
+        BoardSnapshot snapshot = snapshotOf(board);
 
         if (boardFeedbackRepository.deleteFeedback(boardId, userId, Rating.LIKE) > 0)
         {
             boardRepository.decrementLikeCount(boardId);
+            // 내 좋아요도 사라졌다. 좋아요 상태가 BOARD_LIKE·BOARD_UNLIKE만으로 맞도록 취소로도 적는다(docs/board-schema.md 13-3).
+            userEventLogger.boardUnliked(userId, snapshot);
             publishLikeChanged(userId);
         }
+        userEventLogger.boardDeleted(userId, snapshot);
 
         boardRepository.softDelete(boardId, LocalDateTime.now());
         deleteIfUnliked(boardId);
@@ -596,6 +681,7 @@ public class BoardService {
                 Board board = boardRepository.findById(createdId.get()).orElseThrow();
                 board.replaceContents(contents, null);
                 saveFeedback(board, userId);
+                userEventLogger.boardLiked(userId, snapshotOf(board));
                 publishLikeChanged(userId);
                 return new BoardLikeResponse(board.getId(), board.getLikeCount(), true);
             }
