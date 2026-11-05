@@ -59,7 +59,22 @@ public class BoardLikeTokenService {
             this.code = code;
             this.invalidMessage = invalidMessage;
         }
+
+        private static Purpose ofCode(String code)
+        {
+            for (Purpose purpose : values())
+            {
+                if (purpose.code.equals(code))
+                {
+                    return purpose;
+                }
+            }
+            return null;
+        }
     }
+
+    /** 용도를 가리지 않고 검증하다 실패했을 때의 문구({@link #verifyAny}). */
+    private static final String INVALID_ANY_MESSAGE = "보드를 확인할 수 없습니다. 새로고침한 뒤 다시 시도해 주세요.";
 
     private static final String ALGORITHM = "HmacSHA256";
 
@@ -83,8 +98,8 @@ public class BoardLikeTokenService {
         this.previousKey = previousSecret.isBlank() ? null : toKey(previousSecret, "board.like-token.previous-secret");
     }
 
-    /** 검증을 통과한 토큰의 내용. contentIds는 보여 준 배치 순서 그대로다. */
-    public record Verified(String title, List<Long> contentIds) {
+    /** 검증을 통과한 토큰의 내용. contentIds는 보여 준 배치 순서 그대로다. purpose는 어느 화면이 보여 준 보드인지다. */
+    public record Verified(String title, List<Long> contentIds, Purpose purpose) {
     }
 
     /** 토큰에 담는 값. 필드 이름을 짧게 두는 이유는 토큰이 응답마다 실려 나가기 때문이다. */
@@ -112,10 +127,38 @@ public class BoardLikeTokenService {
      */
     public Verified verify(Purpose purpose, String token)
     {
+        Verified verified = decode(token);
+        if (verified == null || verified.purpose() != purpose)
+        {
+            throw new BusinessException(purpose.invalidMessage);
+        }
+        return verified;
+    }
+
+    /**
+     * 용도를 가리지 않고 검증한다. 고치거나 사진으로 저장한 보드의 원본을 확인할 때 쓴다 — 홈 추천 보드인지
+     * 검색 보드인지는 토큰이 알려 준다(docs/board-schema.md 13-4, 13-5).
+     *
+     * <p>좋아요에는 쓰지 않는다. 좋아요는 경로마다 만들 보드 종류가 정해져 있어, 용도를 정해 {@link #verify}로 검증해야
+     * 검색 토큰으로 홈 추천 보드를 만드는 일이 막힌다.</p>
+     */
+    public Verified verifyAny(String token)
+    {
+        Verified verified = decode(token);
+        if (verified == null)
+        {
+            throw new BusinessException(INVALID_ANY_MESSAGE);
+        }
+        return verified;
+    }
+
+    /** 서명이 맞고 형식이 온전하면 내용을, 아니면 null을 돌려준다. */
+    private Verified decode(String token)
+    {
         int dot = token == null ? -1 : token.indexOf('.');
         if (dot <= 0 || dot != token.lastIndexOf('.'))
         {
-            throw invalid(purpose);
+            return null;
         }
 
         byte[] payload;
@@ -127,21 +170,22 @@ public class BoardLikeTokenService {
         }
         catch (IllegalArgumentException e)
         {
-            throw invalid(purpose);
+            return null;
         }
 
         // 서명부터 본다. 서명이 맞기 전의 내용은 누가 만들었는지 모르는 값이라 해석하지 않는다.
         if (!matches(currentKey, payload, signature) && !(previousKey != null && matches(previousKey, payload, signature)))
         {
-            throw invalid(purpose);
+            return null;
         }
 
-        Payload parsed = fromJson(payload, purpose);
-        if (!purpose.code.equals(parsed.p()) || parsed.k() == null || parsed.c() == null)
+        Payload parsed = fromJson(payload);
+        Purpose purpose = parsed == null ? null : Purpose.ofCode(parsed.p());
+        if (purpose == null || parsed.k() == null || parsed.c() == null)
         {
-            throw invalid(purpose);
+            return null;
         }
-        return new Verified(parsed.k(), new ArrayList<>(parsed.c()));
+        return new Verified(parsed.k(), new ArrayList<>(parsed.c()), purpose);
     }
 
     private static boolean matches(SecretKeySpec key, byte[] payload, byte[] signature)
@@ -178,7 +222,7 @@ public class BoardLikeTokenService {
         }
     }
 
-    private Payload fromJson(byte[] payload, Purpose purpose)
+    private Payload fromJson(byte[] payload)
     {
         try
         {
@@ -186,7 +230,7 @@ public class BoardLikeTokenService {
         }
         catch (java.io.IOException e)
         {
-            throw invalid(purpose);
+            return null;
         }
     }
 
@@ -200,10 +244,5 @@ public class BoardLikeTokenService {
                     + "예: openssl rand -base64 48");
         }
         return new SecretKeySpec(bytes, ALGORITHM);
-    }
-
-    private static BusinessException invalid(Purpose purpose)
-    {
-        return new BusinessException(purpose.invalidMessage);
     }
 }

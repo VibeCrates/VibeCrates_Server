@@ -1,5 +1,6 @@
 package com.crates.crates.repository;
 
+import com.crates.crates.DTO.ContentKeyDto;
 import com.crates.crates.DTO.ContentQueryDto;
 import com.crates.crates.DTO.ContentSourceKeyDto;
 import com.crates.crates.entity.contents.Content;
@@ -28,6 +29,11 @@ public interface ContentRepository extends JpaRepository<Content, Long> {
             "FROM Content c WHERE c.dtype = :dtype AND c.sourceKey IN :sourceKeys")
     List<ContentSourceKeyDto> findIdsBySourceKeys(@Param("dtype") String dtype,
                                                   @Param("sourceKeys") Collection<String> sourceKeys);
+
+    /** 사용자 행동 로그에 적을 콘텐츠 종류와 원본 id(docs/board-schema.md 13-2). 없는 id는 결과에서 빠진다. */
+    @Query("SELECT new com.crates.crates.DTO.ContentKeyDto(c.id, c.dtype, c.sourceKey) " +
+            "FROM Content c WHERE c.id IN :ids")
+    List<ContentKeyDto> findKeysByIds(@Param("ids") Collection<Long> ids);
 
     @Query("SELECT new com.crates.crates.DTO.ContentQueryDto(" +
             "c.id, c.title, c.s3ObjectKey, c.imageExtension, c.dtype, c.releaseYear) " +

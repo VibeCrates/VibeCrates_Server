@@ -8,7 +8,7 @@
 --   V1  ContentSchema           콘텐츠 테이블, 가입 직후 취향 콘텐츠 후보
 --   V2  UserSchema              사용자, 취향 벡터, 리프레시 토큰
 --   V3  BoardSchema             보드, 보드 아이템, 좋아요 — 규칙과 조회 인덱스까지
---   V4  SystemLogSchema         로그
+--   V4  UserEventLogSchema      사용자 행동 로그 (docs/board-schema.md 13장)
 --   V5~V7 Seed*                 콘텐츠 데이터 (Java 마이그레이션, seed 패키지)
 --   V8  ContentTitleSearch      제목 검색 인덱스 — 데이터를 넣은 뒤에 만들어야 빠르다
 --   V9  SeedOnboardingContents  가입 취향 후보 데이터 (Java) — 콘텐츠(V5~V7)가 있어야 짝지을 수 있다
