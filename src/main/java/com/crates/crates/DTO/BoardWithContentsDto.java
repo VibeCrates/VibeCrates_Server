@@ -9,6 +9,7 @@ import java.util.List;
  * @param deleted 주인이 지운 보드인지. 좋아요한 사람의 보관함에만 이런 보드가 보인다.
  *                새 좋아요를 받지 않으므로, 프론트는 취소하기 전에 "다시 좋아요할 수 없다"고 알려 줄 수 있다.
  * @param owned   조회한 사용자가 만든 보드인지. 프론트는 이 값으로 삭제 버튼을 보여 준다(주인만 지울 수 있다).
+ * @param layout  contents와 같은 순서의 배치 8개. null이면 기본 배치다. USER_CUSTOM 보드만 값을 가질 수 있다.
  */
 public record BoardWithContentsDto(
         Long boardId,
@@ -17,7 +18,8 @@ public record BoardWithContentsDto(
         boolean liked,
         boolean deleted,
         boolean owned,
-        List<ContentResponseDto> contents
+        List<ContentResponseDto> contents,
+        List<SlotLayoutDto> layout
 ) {
 
     /**
@@ -26,6 +28,6 @@ public record BoardWithContentsDto(
      */
     public static BoardWithContentsDto unsaved(String title, List<ContentResponseDto> contents)
     {
-        return new BoardWithContentsDto(null, title, 0L, false, false, false, contents);
+        return new BoardWithContentsDto(null, title, 0L, false, false, false, contents, null);
     }
 }

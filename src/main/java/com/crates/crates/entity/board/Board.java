@@ -12,6 +12,7 @@ import java.text.Normalizer;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -79,6 +80,7 @@ public class Board {
             orphanRemoval = true         // 3. 리스트에서 BoardItem을 빼기만 해도 DB에서 DELETE 쿼리가 날아감
     )
     @ToString.Exclude   // 무한루프 방지
+    @OrderBy("slotNo")  // 배치(layout)를 칸 순서대로 읽어야 콘텐츠 목록과 짝이 맞는다
     @Builder.Default    // @Builder가 리스트 초기화 식을 무시하는 것을 방지하기 위해
     private List<BoardItem> boardItems = new ArrayList<>(); // NullPointerException 방지를 위한 초기화
 
@@ -86,15 +88,20 @@ public class Board {
      * 보드의 콘텐츠를 통째로 교체한다.
      *
      * <p>보드는 8건 고정이라 개별 추가/삭제가 성립하지 않는다(7건이나 9건인 상태가 생긴다).
-     * 전달된 <b>순서가 곧 배치 순서</b>(slotNo 1~8)가 되고, contentSignature도 여기서 함께 갱신된다.</p>
+     * 전달된 <b>순서가 곧 칸 순서</b>(slotNo 1~8)가 되고, contentSignature도 여기서 함께 갱신된다.</p>
      *
      * <p>signature 갱신을 서비스에 맡기지 않는 이유: 호출을 한 번만 빠뜨려도 unique 제약과
      * 인기 보드 중복 제거가 조용히 틀어진다. 즉시 에러가 나지 않고 나중에 이상한 증상으로만
      * 드러나는 종류라, 파생 관계를 엔티티가 직접 보장한다.</p>
+     *
+     * @param layout 칸별 배치(contents와 같은 순서, 8개). null이면 기본 배치다. 기존 배치를 남기지 않고 받은 대로 덮어쓴다 —
+     *               요청은 화면의 현재 상태를 담으므로 "제목만 바꾼 요청"과 "기본 배치로 돌린 요청"을 구분할 필요가 없다
+     *               (docs/board-schema.md 12-3).
      */
-    public void replaceContents(List<Content> contents)
+    public void replaceContents(List<Content> contents, List<ItemLayout> layout)
     {
         validateContents(contents);
+        validateLayout(layout);
 
         // orphanRemoval=true라 리스트를 비우면 기존 BoardItem은 DELETE된다.
         this.boardItems.clear();
@@ -104,10 +111,25 @@ public class Board {
                     .board(this)
                     .content(contents.get(index))
                     .slotNo(index + 1)
+                    .layout(layout == null ? null : layout.get(index))
                     .build());
         }
 
         this.contentSignature = signatureOf(contents.stream().map(Content::getId).toList());
+    }
+
+    /**
+     * 칸 순서대로의 배치. 기본 배치면 null이다.
+     *
+     * <p>8칸이 모두 있거나 모두 없게 저장하므로(validateLayout) 첫 칸만 보고 판단해도 된다.</p>
+     */
+    public List<ItemLayout> getLayout()
+    {
+        if (boardItems.isEmpty() || boardItems.getFirst().getLayout() == null)
+        {
+            return null;
+        }
+        return boardItems.stream().map(BoardItem::getLayout).toList();
     }
 
     /** 제목 변경. USER_CUSTOM 보드만 사용자가 직접 바꿀 수 있다(BoardService가 판단). */
@@ -173,5 +195,44 @@ public class Board {
         {
             throw new BusinessException("보드에 같은 콘텐츠를 두 번 담을 수 없습니다.");
         }
+    }
+
+    /**
+     * 배치는 8칸이 모두 있거나 모두 없다. 옮긴 칸만 저장하면 기본 배치가 바뀌었을 때 나머지 칸만 움직여
+     * 서로 겹친다(docs/board-schema.md 12-1). DB의 ck_board_item_layout*는 칸 하나씩만 본다.
+     */
+    private static void validateLayout(List<ItemLayout> layout)
+    {
+        if (layout == null)
+        {
+            return;
+        }
+        if (layout.size() != ITEMS_PER_BOARD)
+        {
+            throw new BusinessException(
+                    "배치는 " + ITEMS_PER_BOARD + "칸 모두 보내야 합니다. 전달: " + layout.size());
+        }
+        Set<Integer> zOrders = new HashSet<>();
+        for (ItemLayout item : layout)
+        {
+            if (item == null || item.x() == null || item.y() == null || item.rotation() == null || item.z() == null)
+            {
+                throw new BusinessException("배치 값이 비어 있습니다.");
+            }
+            // NaN은 어떤 비교도 거짓이라 범위 검사를 빠져나간다. 먼저 거른다.
+            if (!inRange(item.x(), 0, 100) || !inRange(item.y(), 0, 100) || !inRange(item.rotation(), -180, 180))
+            {
+                throw new BusinessException("배치 값이 범위를 벗어났습니다. 위치는 0~100, 기울기는 -180~180입니다.");
+            }
+            if (item.z() < 1 || item.z() > ITEMS_PER_BOARD || !zOrders.add(item.z()))
+            {
+                throw new BusinessException("겹침 순서는 1~" + ITEMS_PER_BOARD + "을 한 번씩 써야 합니다.");
+            }
+        }
+    }
+
+    private static boolean inRange(float value, float min, float max)
+    {
+        return Float.isFinite(value) && value >= min && value <= max;
     }
 }
