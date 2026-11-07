@@ -331,3 +331,25 @@ aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
 CI 배포를 멈춰 실험 중 revision이 바뀌지 않게 한다. 다음 Terraform/CI의 task 정의 생성이 두 값을 다시 기본으로
 되돌릴 수 있으므로 두 값의 적용 위치를 2단계 배포 설정에도 반영한다.
 [작업 정의 등록 API](https://docs.aws.amazon.com/cli/latest/reference/ecs/register-task-definition.html).
+
+## AWS 재계산 전후 비교
+
+`aws/toggle.py`는 저장된 USER_CUSTOM 보드의 좋아요→바로 취소 쌍을 도착시킨다.
+`RATE` 단위는 쌍/s이며, 별도 화면 계정은 인기 보드를 5회/s로 읽는다.
+600명 행동 계정과 600명 읽기 계정을 나누고, 측정 전에 아직 좋아요하지 않은 보드를 배정한다.
+한 단계 안에서는 같은 사용자·보드 쌍을 겹쳐 보내지 않는다. 각 비교 버전 시작 전에 동일 DB 덤프 복원과 Redis 비우기가 필요하다.
+
+```bash
+# 기존 AWS 실행 환경(RESOURCE_MODE, PG*, ECS*, K6_BIN)을 주입한 세션에서 실행한다.
+python3 load-test/aws/toggle.py \
+  --output /private/results/recalc-after \
+  --prepared-directory /private/results/prepared-after \
+  5 10 20 30 40 60 80 120 160 240 320 480 640
+```
+
+단계마다 30초 워밍업과 120초 측정, 포화 주변 세 지점 각 2회 반복을 수행한다.
+like/unlike/read 각각 p50/p95/p99·실패율과 구간 안 완료 쌍/s를 기록한다.
+실패율은 like/unlike 중 큰 값으로 보수적으로 판정한다.
+포화 기준은 실패율 5% 이상, drop, 구간 안 쌍 완료율 90% 미만이다.
+ECS Exec 수집기는 `crates_user_vector_*`도 보존하므로 재계산 수·시간·대기열·실패와
+Hikari pending/acquire 지표를 같은 시간 창에서 비교할 수 있다.

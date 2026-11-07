@@ -8,7 +8,7 @@ token=$(curl -fsS -X POST http://localhost:8080/api/auth/login -H 'Content-Type:
 while :; do
   echo "AWS_SAMPLE $(date +%s)"
   curl -fsS -H "Authorization: Bearer $token" http://localhost:8080/actuator/prometheus |
-    sed -n '/^crates_recommendation_cache_total/p; /^crates_ai_embedding_/p; /^hikaricp_connections_/p; /^process_cpu_usage/p; /^jvm_memory_used_bytes/p'
+    sed -n '/^crates_recommendation_cache_total/p; /^crates_ai_embedding_/p; /^crates_user_vector_/p; /^hikaricp_connections_/p; /^process_cpu_usage/p; /^jvm_memory_used_bytes/p'
   echo AWS_SAMPLE_END
   [ "${1:-loop}" = once ] && break
   sleep 2

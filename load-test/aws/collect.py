@@ -39,7 +39,7 @@ def ecs_command(task, once=False):
 def parse_prom(text):
     values = {}
     for line in text.replace('\r', '').splitlines():
-        match = re.match(r'((?:crates_recommendation_cache_total|crates_ai_embedding_[\w]+|hikaricp_connections_[\w]+|process_cpu_usage|jvm_memory_used_bytes)(?:\{[^}]*\})?)\s+([\d.eE+\-]+)', line)
+        match = re.match(r'((?:crates_recommendation_cache_total|crates_ai_embedding_[\w]+|crates_user_vector_[\w]+|hikaricp_connections_[\w]+|process_cpu_usage|jvm_memory_used_bytes)(?:\{[^}]*\})?)\s+([\d.eE+\-]+)', line)
         if match:
             values[match[1]] = float(match[2])
     return values
