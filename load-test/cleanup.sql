@@ -11,20 +11,44 @@
 
 BEGIN;
 
+-- 정리 중 앱의 쓰기가 끼어들어 삭제 대상이나 좋아요 수가 바뀌지 않게 한다.
+LOCK TABLE users, user_event_log, board_feedback, board_item, board,
+           user_vector, user_refresh_tokens IN SHARE ROW EXCLUSIVE MODE;
+
 CREATE TEMP TABLE loadtest_users ON COMMIT DROP AS
 SELECT id FROM users WHERE login_id LIKE 'loadtest%';
 
-CREATE TEMP TABLE loadtest_boards ON COMMIT DROP AS
-SELECT id FROM board WHERE title LIKE 'loadtest%';
+-- 행동 로그는 외래 키가 없어 사용자를 지워도 남는다. 남기면 측정할 때마다 로그 테이블이 커져 비교가 깨진다.
+DELETE FROM user_event_log WHERE user_id IN (SELECT id FROM loadtest_users);
+DELETE FROM board_feedback WHERE user_id IN (SELECT id FROM loadtest_users);
 
-DELETE FROM board_feedback
- WHERE user_id IN (SELECT id FROM loadtest_users)
-    OR board_id IN (SELECT id FROM loadtest_boards);
+-- 제목만 보면 원래 추천 제목으로 저장한 USER_CUSTOM 보드가 남아 fk_board_user 오류로
+-- 전체 정리가 롤백됐다(로컬 53건). 테스트 계정 소유 보드도 제목과 무관하게 지운다.
+-- 테스트 좋아요로 저장된 실제 제목의 추천·검색 보드도 정리한다. 앱의 deleteIfUnliked처럼
+-- 테스트 좋아요를 뺀 뒤 실제 LIKE가 0개인 보드만 고르므로 다른 사용자의 좋아요가 남으면 보존한다.
+CREATE TEMP TABLE loadtest_boards ON COMMIT DROP AS
+SELECT b.id FROM board b
+ WHERE b.title LIKE 'loadtest%'
+    OR b.user_id IN (SELECT id FROM loadtest_users)
+    OR (b.board_type IN ('TASTE_RECOMMEND', 'SEARCH_RECOMMEND')
+        AND NOT EXISTS (SELECT 1 FROM board_feedback f
+                         WHERE f.board_id = b.id AND f.rating = 'LIKE'));
+
+-- 삭제 대상 보드에 달린 다른 사용자의 피드백도 FK 순서에 맞춰 먼저 지운다.
+DELETE FROM board_feedback WHERE board_id IN (SELECT id FROM loadtest_boards);
 
 DELETE FROM board_item WHERE board_id IN (SELECT id FROM loadtest_boards);
 DELETE FROM board      WHERE id       IN (SELECT id FROM loadtest_boards);
--- 행동 로그는 외래 키가 없어 사용자를 지워도 남는다. 남기면 측정할 때마다 로그 테이블이 커져 비교가 깨진다.
-DELETE FROM user_event_log WHERE user_id IN (SELECT id FROM loadtest_users);
+
+-- SQL로 테스트 좋아요를 지웠으므로 남은 보드의 집계도 실제 LIKE 수와 맞춘다.
+UPDATE board b
+   SET like_count = likes.like_count
+  FROM (SELECT remaining.id, count(f.id) AS like_count
+          FROM board remaining
+          LEFT JOIN board_feedback f ON f.board_id = remaining.id AND f.rating = 'LIKE'
+         GROUP BY remaining.id) likes
+ WHERE b.id = likes.id AND b.like_count IS DISTINCT FROM likes.like_count;
+
 DELETE FROM user_vector WHERE user_id IN (SELECT id FROM loadtest_users);
 DELETE FROM user_refresh_tokens WHERE user_id IN (SELECT id FROM loadtest_users);
 DELETE FROM users WHERE id IN (SELECT id FROM loadtest_users);
