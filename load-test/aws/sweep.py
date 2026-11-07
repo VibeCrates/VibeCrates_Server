@@ -16,6 +16,18 @@ from planner import Resources, sweep_plan
 from verify import mutations, unlikes
 
 
+def measurement_start(log):
+    for line in Path(log).read_text().splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        message = record.get('msg', '') if isinstance(record, dict) else ''
+        if isinstance(message, str) and message.startswith('AWS_STAGE_START '):
+            return float(message.removeprefix('AWS_STAGE_START ')) / 1000
+    return None
+
+
 def judge(summary, manifest, cache, seconds):
     m = summary['metrics']
     value = lambda key, field, default=0: m.get(key, {}).get(field, default)
@@ -25,6 +37,13 @@ def judge(summary, manifest, cache, seconds):
     dropped = value('dropped_iterations', 'count')
     offered = max(expected, value('aws_started', 'count') + dropped)
     on_time = value('aws_completed_on_time', 'count')
+    screen_count = value('aws_completed_on_time{kind:screen}', 'count', None)
+    api_count = value('aws_api_completed_on_time', 'count', None)
+    legacy_throughput = screen_count is None or api_count is None
+    if screen_count is None:
+        screen_count = sum(value(f'aws_completed{{name:{name}}}', 'count') for name in SCREENS)
+    if api_count is None:
+        api_count = value('api_failed', 'passes') + value('api_failed', 'fails')
     invalid = value('workload_errors', 'count') > 0
     details = {}
     for kind, prefix in [('screens', 'screen_duration{screen:'), ('apis', 'api_duration{name:')]:
@@ -44,8 +63,10 @@ def judge(summary, manifest, cache, seconds):
     saturation = failed >= .05 or dropped > 0 or on_time / max(offered, 1) < .90
     return {**details, 'expected_iterations': expected, 'offered_iterations': offered, 'completed': completed,
             'completed_on_time': on_time, 'completion_ratio': on_time / max(offered, 1),
-            'actual_iterations_per_second': completed / seconds,
-            'actual_api_per_second': (value('api_failed', 'passes') + value('api_failed', 'fails')) / seconds,
+            'actual_iterations_per_second': on_time / seconds,
+            'actual_screens_per_second': screen_count / seconds,
+            'actual_api_per_second': api_count / seconds,
+            'throughput_includes_drain': legacy_throughput,
             'dropped_iterations': dropped, 'failure_rate': failed, 'goal_pass': goals,
             'saturated': saturation, 'invalid': invalid, 'missing_scenarios': missing, 'cache': cache}
 
@@ -69,18 +90,18 @@ def run_stage(out, prepared, rate, seconds, args):
         else:
             sampler.terminate()
             raise RuntimeError('로컬 자원 샘플러 로그인 시간초과')
-    metrics.start()
-    before = metrics.snapshot()
-    write_json(out / 'cache-before.json', before)
-    pg_reset()
-    event_before = int(pg('SELECT coalesce(max(id),0) FROM user_event_log')) if args.verify_mutations or args.verify_unlikes else None
-    env = dict(os.environ, RATE=str(rate), DURATION=f'{seconds}s', AWS_SECONDS=str(seconds),
-        AWS_STAGE_FILE=str(out / 'stage.json'), AWS_RUN_ID=manifest['run'], SKIP_AI='1' if args.skip_ai else '0',
-        CACHE_MODE=args.cache_mode, AWS_VERIFY_MUTATIONS='1' if args.verify_mutations else '0',
-        AWS_VERIFY_UNLIKES='1' if args.verify_unlikes else '0',
-        K6_AUTO_EXTENSION_RESOLUTION='true', K6_NO_USAGE_REPORT='true')
-    started = time.time()
     try:
+        metrics.start()
+        before = metrics.snapshot()
+        write_json(out / 'cache-before.json', before)
+        pg_reset()
+        event_before = int(pg('SELECT coalesce(max(id),0) FROM user_event_log')) if args.verify_mutations or args.verify_unlikes else None
+        env = dict(os.environ, RATE=str(rate), DURATION=f'{seconds}s', AWS_SECONDS=str(seconds),
+            AWS_STAGE_FILE=str(out / 'stage.json'), AWS_RUN_ID=manifest['run'], SKIP_AI='1' if args.skip_ai else '0',
+            CACHE_MODE=args.cache_mode, AWS_VERIFY_MUTATIONS='1' if args.verify_mutations else '0',
+            AWS_VERIFY_UNLIKES='1' if args.verify_unlikes else '0',
+            K6_AUTO_EXTENSION_RESOLUTION='true', K6_NO_USAGE_REPORT='true')
+        started = time.time()
         with open(out / 'k6.log', 'w') as log:
             status = subprocess.run([os.environ.get('K6_BIN', 'k6'), 'run', '--quiet', '--log-format', 'json', '--no-usage-report',
                 '--summary-export', str(out / 'summary.json'), str(ROOT / 'load-test/scenarios/aws-screens.js')], env=env, stdout=log, stderr=subprocess.STDOUT).returncode
@@ -94,11 +115,18 @@ def run_stage(out, prepared, rate, seconds, args):
             os.killpg(sampler.pid, signal.SIGTERM)
             sampler.wait(timeout=10)
     pg_snapshot(out / 'pgss.json')
-    write_json(out / 'window.json', {'start': started, 'end': ended, 'rate': rate, 'seconds': seconds})
+    process_started, process_ended = started, ended
+    actual_start = measurement_start(out / 'k6.log')
+    if actual_start is not None:
+        started, ended = actual_start, min(ended, actual_start + seconds)
+    write_json(out / 'window.json', {'start': started, 'end': ended, 'rate': rate, 'seconds': seconds,
+        'process_start': process_started, 'process_end': process_ended})
     if args.resources == 'aws':
         cloudwatch(out, started, ended)
     if status not in (0, 99) or not (out / 'summary.json').exists():
         raise RuntimeError(f'k6 실행 오류({status}). {out}/k6.log를 확인하세요')
+    if actual_start is None:
+        raise RuntimeError('k6 실제 측정 시작 시각이 없습니다 — 측정 무효')
     result = judge(json.loads((out / 'summary.json').read_text()), manifest, cache_delta(before, after), seconds)
     if args.verify_unlikes:
         result['unlikes'] = unlikes(out / 'k6.log', manifest, event_before, out / 'unlike-verification.json')

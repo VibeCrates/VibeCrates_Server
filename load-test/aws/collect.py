@@ -39,10 +39,18 @@ def ecs_command(task, once=False):
 def parse_prom(text):
     values = {}
     for line in text.replace('\r', '').splitlines():
-        match = re.match(r'((?:crates_(?:recommendation|ai_embedding)_cache_total|hikaricp_connections_[\w]+|process_cpu_usage|jvm_memory_used_bytes)(?:\{[^}]*\})?)\s+([\d.eE+\-]+)', line)
+        match = re.match(r'((?:crates_recommendation_cache_total|crates_ai_embedding_[\w]+|hikaricp_connections_[\w]+|process_cpu_usage|jvm_memory_used_bytes)(?:\{[^}]*\})?)\s+([\d.eE+\-]+)', line)
         if match:
             values[match[1]] = float(match[2])
     return values
+
+
+def latest_sample(text):
+    samples = re.findall(r'AWS_SAMPLE (\d+)\n(.*?)AWS_SAMPLE_END', text.replace('\r', ''), re.S)
+    if not samples:
+        return None
+    timestamp, body = samples[-1]
+    return int(timestamp), parse_prom(body)
 
 
 class Metrics:
@@ -61,11 +69,30 @@ class Metrics:
             return {'local': parse_prom(request('/actuator/prometheus', self.token, text=True))}
         if set(ecs_targets()) != set(self.targets):
             raise RuntimeError('단계 중 ECS 작업 목록이 바뀌었습니다 — 측정 무효')
+        boundary = time.time()
         def one(task):
-            p = subprocess.run(ecs_command(task, True), capture_output=True, text=True, timeout=45)
-            if p.returncode:
-                raise RuntimeError('ECS Exec 지표 수집 실패')
-            return task, parse_prom(p.stdout)
+            if self.processes:
+                index = self.targets.index(task)
+                path = self.directory / f'ecs-task-{index}.promlog'
+                deadline = time.monotonic() + 45
+                while time.monotonic() < deadline:
+                    sample = latest_sample(path.read_text())
+                    if sample and sample[0] >= boundary:
+                        values = sample[1]
+                        break
+                    if self.processes[index].poll() is not None:
+                        raise RuntimeError('ECS Exec 연속 수집기가 종료됐습니다')
+                    time.sleep(.1)
+                else:
+                    raise RuntimeError('ECS Exec 새 지표 샘플 시간초과')
+            else:
+                p = subprocess.run(ecs_command(task, True), capture_output=True, text=True, timeout=45)
+                if p.returncode:
+                    raise RuntimeError('ECS Exec 지표 수집 실패')
+                values = parse_prom(p.stdout)
+            if not any(key.startswith('hikaricp_connections_') for key in values):
+                raise RuntimeError('ECS Exec 앱 지표가 비어 있습니다')
+            return task, values
         with ThreadPoolExecutor(max_workers=len(self.targets)) as pool:
             return dict(pool.map(one, self.targets))
 
@@ -74,7 +101,8 @@ class Metrics:
             for i, task in enumerate(self.targets):
                 f = open(self.directory / f'ecs-task-{i}.promlog', 'w')
                 self.files.append(f)
-                self.processes.append(subprocess.Popen(ecs_command(task), stdout=f, stderr=subprocess.STDOUT, start_new_session=True))
+                self.processes.append(subprocess.Popen(ecs_command(task), stdin=subprocess.PIPE,
+                    stdout=f, stderr=subprocess.STDOUT, start_new_session=True))
             return
         def sample():
             try:
@@ -95,8 +123,10 @@ class Metrics:
         for p in self.processes:
             # Session Manager 자식 프로세스도 종료한다.
             import signal
-            os.killpg(p.pid, signal.SIGTERM)
+            if p.poll() is None:
+                os.killpg(p.pid, signal.SIGTERM)
             p.wait(timeout=10)
+            p.stdin.close()
         for f in self.files:
             f.close()
         if self.error:

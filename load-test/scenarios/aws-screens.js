@@ -21,10 +21,13 @@ const screens = new SharedArray('aws-screen-users', () => JSON.parse(open(__ENV.
 const contents = new SharedArray('aws-contents', () => JSON.parse(open(__ENV.AWS_STAGE_FILE)).contents);
 const runId = __ENV.AWS_RUN_ID;
 const client = new redis.Client(__ENV.REDIS_URL || 'redis://localhost:6379/0');
+// SET NX의 nil 응답은 xk6-redis에서 예외다. 잠금 경합은 정수 0으로 돌려받는다.
+const acquireLock = "return redis.call('SET', KEYS[1], ARGV[1], 'NX', 'PX', ARGV[2]) and 1 or 0";
 const screenDuration = new Trend('screen_duration', true);
 const started = new Counter('aws_started');
 const completed = new Counter('aws_completed');
 const onTime = new Counter('aws_completed_on_time');
+const apiOnTime = new Counter('aws_api_completed_on_time');
 const controlDuration = new Trend('cache_control_duration', true);
 const forcedMiss = new Rate('home_forced_miss');
 const errors = new Counter('workload_errors');
@@ -35,6 +38,8 @@ const names = ['onboarding_status', 'recommend', 'popular', 'my_boards', 'archiv
   ...Object.keys(shares).filter((n) => !screenNames.includes(n))];
 if (shares.search_results) names.push('search_board');
 const thresholds = { api_failed: ['rate<0.01'], workload_errors: ['count==0'] };
+thresholds['aws_completed_on_time{kind:screen}'] = ['count>=0'];
+thresholds.aws_api_completed_on_time = ['count>=0'];
 for (const name of Object.keys(shares)) {
   thresholds[`aws_completed{name:${name}}`] = ['count>=0'];
 }
@@ -51,7 +56,8 @@ export const options = {
     // 1만 초 단위면 RATE=2에서도 0.5%를 1/min으로 억지로 올리지 않는다. 준비도 같은 식으로 ceil한다.
     rate: Math.round(Number(__ENV.RATE) * share * 10000), timeUnit: '10000s',
     duration: __ENV.DURATION || '120s', gracefulStop: '30s',
-    preAllocatedVUs: Math.max(2, Math.ceil(Number(__ENV.RATE) * share * 2)),
+    // 부하 중 VU 초기화가 drop을 만들지 않게 허용한 VU를 측정 전에 모두 만든다.
+    preAllocatedVUs: Math.max(10, Math.ceil(Number(__ENV.RATE) * share * 10)),
     maxVUs: Math.max(10, Math.ceil(Number(__ENV.RATE) * share * 10)),
   }])),
   thresholds,
@@ -60,12 +66,16 @@ export const options = {
 
 function problem(message) {
   errors.add(1);
+  console.error(`WORKLOAD_ERROR ${message}`);
   // 일감 부족·Redis 오류는 서버 포화와 구분한다. 무효인 캐시 비율로 다음 단계를 재지 않는다.
   exec.test.abort(message);
   throw new Error(message);
 }
 function task() {
   const name = exec.scenario.name;
+  if (name === 'home' && exec.scenario.iterationInTest === 0) {
+    console.log(`AWS_STAGE_START ${exec.scenario.startTime}`);
+  }
   const value = tasks[name][exec.scenario.iterationInTest];
   if (!value) problem(`준비한 일감 부족: ${name}`);
   started.add(1, { kind: screenNames.includes(name) ? 'screen' : 'action', name });
@@ -74,7 +84,9 @@ function task() {
 function done() {
   const name = exec.scenario.name;
   completed.add(1, { kind: screenNames.includes(name) ? 'screen' : 'action', name });
-  if (exec.instance.currentTestRunDuration < Number(__ENV.AWS_SECONDS) * 1000) onTime.add(1);
+  if (Date.now() < exec.scenario.startTime + Number(__ENV.AWS_SECONDS) * 1000) {
+    onTime.add(1, { kind: screenNames.includes(name) ? 'screen' : 'action', name });
+  }
 }
 function record(res, name, valid = () => true, extra = {}) {
   const tags = { name, ...extra };
@@ -82,12 +94,17 @@ function record(res, name, valid = () => true, extra = {}) {
   try { ok = ok && res.json('success') === true && valid(res.json('data')); } catch (_) { ok = false; }
   apiDuration.add(res.timings.duration, tags);
   apiFailed.add(!ok, tags);
+  if (Date.now() < exec.scenario.startTime + Number(__ENV.AWS_SECONDS) * 1000) apiOnTime.add(1);
   if (!ok) console.error(`요청 실패: ${name} HTTP ${res.status}`);
   return ok;
 }
 function params(token, label) {
   return { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     timeout: '25s', tags: { name: label } };
+}
+function stoppedByExecutor(error) {
+  return String(error).includes('context canceled')
+    && Date.now() >= exec.scenario.startTime + (Number(__ENV.AWS_SECONDS) + 30) * 1000;
 }
 function send(method, path, user, body, name, valid, extra) {
   const res = http.request(method, api.BASE + path, body === null ? null : JSON.stringify(body), params(user.token, name));
@@ -100,35 +117,62 @@ function enter(name, work) {
 }
 
 export async function home() {
-  let { user } = task();
-  let lock;
-  const controlStart = Date.now();
+  const { user } = task();
+  const screenStart = Date.now();
+  const lock = `loadtest:home-lock:${user.id}`;
+  let acquired = false;
+  let controlMillis = 0;
   try {
-    // 같은 계정의 동시 DEL이 적중 요청을 미스로 바꾸지 않게 화면 풀 안에서 잠근다.
-    for (let attempt = 0; attempt < 600; attempt++) {
-      lock = `loadtest:home-lock:${user.id}`;
-      if (await client.sendCommand('SET', lock, runId, 'NX', 'PX', 60000) === 'OK') break;
-      user = screens[(exec.scenario.iterationInTest + attempt + 1) % screens.length];
-      lock = null;
-      sleep(.001);
+    const ready = http.get(`${api.BASE}/api/users/me/onboarding`, params(user.token, 'onboarding_status'));
+    if (!record(ready, 'onboarding_status', (d) => d.initialContentsSelected === true)) return;
+    // 준비 상태 조회는 캐시에 관여하지 않는다. 같은 사용자의 추천 구간만 직렬화한다.
+    const controlStart = Date.now();
+    try {
+      while (Date.now() - controlStart < 60000) {
+        if (await client.sendCommand('EVAL', acquireLock, 1, lock, runId, 60000) === 1) {
+          acquired = true;
+          break;
+        }
+        sleep(.01);
+      }
+      if (!acquired) problem('홈 추천 잠금 대기 60초 초과 — 측정 무효');
+      const miss = Math.random() < .5;
+      if (__ENV.CACHE_MODE !== 'off' && miss) await client.del(`reco:v1:${user.id}`);
+      forcedMiss.add(miss);
+    } catch (error) {
+      if (stoppedByExecutor(error)) return;
+      problem('홈 캐시 제어 실패 — Redis 연결과 버전을 확인하세요');
+    } finally {
+      controlMillis = Date.now() - controlStart;
+      controlDuration.add(controlMillis);
     }
-    if (!lock) problem('홈 화면 계정 동시 점유 600명 초과 — 풀을 늘려야 합니다');
-    const miss = Math.random() < .5;
-    if (__ENV.CACHE_MODE !== 'off' && miss) await client.del(`reco:v1:${user.id}`);
-    forcedMiss.add(miss);
-    controlDuration.add(Date.now() - controlStart);
-    // DEL·계정 잠금은 화면 시간 밖이다. ready → batch는 기존 screens.js와 같다.
-    enter('home', () => {
-      // 순차 가드+본문의 최대 50초가 60초 잠금 TTL 안에 끝나게 각 요청 상한을 맞춘다.
-      const ready = http.get(`${api.BASE}/api/users/me/onboarding`, params(user.token, 'onboarding_status'));
-      if (!record(ready, 'onboarding_status', (d) => d.initialContentsSelected === true)) return;
-      const requests = api.homeRequests(user.token);
-      for (const request of Object.values(requests)) request.params.timeout = '25s';
-      const results = http.batch(requests);
-      for (const [name, res] of Object.entries(results)) record(res, name);
-    });
-  } catch (e) { problem('홈 캐시 제어 실패 — Redis 연결과 버전을 확인하세요'); }
-  finally { if (lock) await client.del(lock); }
+    const requests = api.homeRequests(user.token);
+    for (const request of Object.values(requests)) request.params.timeout = '25s';
+    const results = http.batch(requests);
+    for (const [name, res] of Object.entries(results)) record(res, name);
+  } finally {
+    screenDuration.add(Date.now() - screenStart - controlMillis, { screen: 'home' });
+    done();
+    if (acquired) {
+      try { await client.del(lock); }
+      catch (error) {
+        if (!stoppedByExecutor(error)) problem('홈 추천 잠금 해제 실패');
+      }
+    }
+  }
+}
+export async function teardown() {
+  const keys = screens.map((user) => `loadtest:home-lock:${user.id}`);
+  const script = `
+    local deleted = 0
+    for _, key in ipairs(KEYS) do
+      if redis.call('GET', key) == ARGV[1] then
+        deleted = deleted + redis.call('DEL', key)
+      end
+    end
+    return deleted
+  `;
+  await client.sendCommand('EVAL', script, keys.length, ...keys, runId);
 }
 export async function search_results() {
   const { user, keyword, embeddingKey } = task();

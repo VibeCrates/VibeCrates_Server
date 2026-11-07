@@ -7,9 +7,9 @@ import unittest
 import tempfile
 from unittest.mock import patch
 
-from collect import cache_delta
+from collect import cache_delta, latest_sample
 from model import counts
-from sweep import judge
+from sweep import judge, measurement_start
 from keywords import KEYWORD_COUNT, Keywords, embedding_key, keyword
 from planner import Resources, demands, sweep_plan, unlike_candidates
 from verify import unlikes
@@ -50,6 +50,37 @@ class ToolsTest(unittest.TestCase):
             cache_delta(after, before)
         with self.assertRaises(RuntimeError):
             cache_delta(before, {'a': after['a']})
+
+    def test_throughput_excludes_drain(self):
+        summary = self.summary(on_time=89)
+        summary['metrics']['aws_completed_on_time{kind:screen}'] = {'count': 40}
+        summary['metrics']['aws_api_completed_on_time'] = {'count': 80}
+        result = judge(summary, {'tasks': {'home': [None] * 100}}, {}, 100)
+        self.assertEqual(result['actual_iterations_per_second'], .89)
+        self.assertEqual(result['actual_screens_per_second'], .4)
+        self.assertEqual(result['actual_api_per_second'], .8)
+        self.assertFalse(result['throughput_includes_drain'])
+
+    def test_legacy_summary_throughput(self):
+        result = self.result()
+        self.assertEqual(result['actual_screens_per_second'], 1)
+        self.assertEqual(result['actual_api_per_second'], 1)
+        self.assertTrue(result['throughput_includes_drain'])
+
+    def test_complete_metrics_sample(self):
+        text = ('AWS_SAMPLE 10\r\nhikaricp_connections_pending{pool="test"} 1\r\nAWS_SAMPLE_END\r\n'
+                'AWS_SAMPLE 12\r\nhikaricp_connections_pending{pool="test"} 2\r\nAWS_SAMPLE_END\r\n'
+                'AWS_SAMPLE 14\r\nhikaricp_connections_pending{pool="test"} 3\r\n')
+        self.assertEqual(latest_sample(text), (12, {'hikaricp_connections_pending{pool="test"}': 2}))
+        self.assertIsNone(latest_sample('AWS_SAMPLE 10\n'))
+
+    def test_measurement_start_excludes_vu_initialization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'k6.log'
+            path.write_text('initializing VUs\n[]\n' + json.dumps({'msg': 'AWS_STAGE_START 1794070000123'}) + '\n')
+            self.assertEqual(measurement_start(path), 1794070000.123)
+            path.write_text('initialization failed\n')
+            self.assertIsNone(measurement_start(path))
 
     def test_low_rate_keeps_rare_action(self):
         values = counts(2, 45)
