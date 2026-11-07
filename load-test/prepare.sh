@@ -3,6 +3,7 @@
 #
 #   ./load-test/prepare.sh                   # 기본: 6개월 누적(seed.sh 3 1 0.6 1.0 1) — 계정 1,200 / 보드 364,800 / 좋아요 456,000
 #   ./load-test/prepare.sh 3 1 0.6 1.2 1     # 인자는 seed.sh에 그대로 넘긴다(하루 좋아요 / 하루 보드 수정 / 인기 보드 비율 / 지프 s / 하루 검색 좋아요)
+#   SEED_VERSION=2 ./load-test/prepare.sh 4.625 1 0.6 1.0 1.5417
 #
 # 정리 → 시딩 → 취향 벡터 재계산 → VACUUM ANALYZE → 통계 초기화. 몇 분 걸리므로 측정마다 돌리지 않는다.
 # 측정 사이의 초기화는 run-measure.sh가 가볍게 한다.

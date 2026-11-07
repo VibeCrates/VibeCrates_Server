@@ -17,6 +17,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 set -a; . ./crates_server.env; set +a
 
+# 이전 측정은 기본 v1로 재현하고, v2는 환경 변수로 명시해서 선택한다.
+SEED_SQL=load-test/seed.sql
+if [ "${SEED_VERSION:-1}" = "2" ]; then
+    SEED_SQL=load-test/seed_v2.sql
+fi
+
 LIKES_PER_DAY="${1:-3}"; EDITS_PER_DAY="${2:-1}"; POPULAR_RATIO="${3:-0.6}"; ZIPF_S="${4:-1.0}"; SEARCH_LIKES_PER_DAY="${5:-1}"
 awk -v r="$POPULAR_RATIO" 'BEGIN{exit !(r>=0 && r<=1)}' || { echo "인기 보드 비율은 0~1이어야 합니다: $POPULAR_RATIO" >&2; exit 1; }
 awk -v s="$ZIPF_S" 'BEGIN{exit !(s>0)}' || { echo "지프 s는 0보다 커야 합니다: $ZIPF_S" >&2; exit 1; }
@@ -65,7 +71,7 @@ read -r users e_users ai e_ai search e_search custom e_custom items e_items like
         max_ul e_max_ul max_ub e_max_ub top_like top100 liked2 <<<"$(
     $PSQL -q -t -A -F' ' -v likes_per_day="$LIKES_PER_DAY" -v edits_per_day="$EDITS_PER_DAY" \
           -v popular_ratio="$POPULAR_RATIO" -v zipf_s="$ZIPF_S" -v search_likes_per_day="$SEARCH_LIKES_PER_DAY" \
-          < load-test/seed.sql
+          < "$SEED_SQL"
 )"
 
 printf '  %-22s %12s %12s\n' "" "실제" "기대"
