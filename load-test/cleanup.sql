@@ -23,6 +23,8 @@ DELETE FROM board_feedback
 
 DELETE FROM board_item WHERE board_id IN (SELECT id FROM loadtest_boards);
 DELETE FROM board      WHERE id       IN (SELECT id FROM loadtest_boards);
+-- 행동 로그는 외래 키가 없어 사용자를 지워도 남는다. 남기면 측정할 때마다 로그 테이블이 커져 비교가 깨진다.
+DELETE FROM user_event_log WHERE user_id IN (SELECT id FROM loadtest_users);
 DELETE FROM user_vector WHERE user_id IN (SELECT id FROM loadtest_users);
 DELETE FROM user_refresh_tokens WHERE user_id IN (SELECT id FROM loadtest_users);
 DELETE FROM users WHERE id IN (SELECT id FROM loadtest_users);
@@ -53,6 +55,7 @@ SET lock_timeout = '30s';
 VACUUM (FULL, ANALYZE) board;
 VACUUM (FULL, ANALYZE) board_item;
 VACUUM (FULL, ANALYZE) board_feedback;
+VACUUM (FULL, ANALYZE) user_event_log;
 -- 계정 쪽도 회수한다. 빠져 있어서 재시딩할 때마다 users 가 빈 페이지를 달고 불어났다
 -- (계정 1,003개가 25페이지면 될 것을 49페이지). 인덱스 없는 조회(풀스캔)를 비교할 때 그대로 숫자가 틀린다.
 VACUUM (FULL, ANALYZE) users;

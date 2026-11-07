@@ -1,9 +1,16 @@
 package com.crates.crates.repository;
 
+import com.crates.crates.entity.UserEventLog;
+import com.crates.crates.entity.board.ItemLayout;
+import com.crates.crates.entity.contents.Content;
 import com.crates.crates.enumData.AuthProvider;
+import com.crates.crates.enumData.BoardType;
 import com.crates.crates.enumData.Rating;
 import com.crates.crates.entity.board.Board;
+import com.crates.crates.enumData.UserEventType;
 import com.crates.crates.enumData.Visibility;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.AfterAll;
@@ -99,6 +106,9 @@ class RepositoryBenchmarkTest {
     @Autowired private UserRepository userRepository;
     @Autowired private UserVectorRepository userVectorRepository;
     @Autowired private UserRefreshTokenRepository userRefreshTokenRepository;
+    @Autowired private UserEventLogRepository userEventLogRepository;
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     // ── BoardFeedbackRepository ─────────────────────────────────────────────
 
@@ -320,6 +330,152 @@ class RepositoryBenchmarkTest {
 
         benchmark("BoardItemRepository.findContentIdsByBoardIds  (보드 20개)", i ->
                 boardItemRepository.findContentIdsByBoardIds(page).size());
+
+        // 인기·보관함 목록이 2026-11-05부터 쓰는 쿼리. 위와 같은 보드로 재서 배치 칼럼 4개를 더 읽는 비용을 본다.
+        benchmark("BoardItemRepository.findItemsByBoardIds  (보드 20개, 배치 포함)", i ->
+                boardItemRepository.findItemsByBoardIds(page).size());
+
+        // 배치가 저장된 보드만(시딩에서 사용자 보드의 절반). 값이 채워진 행이라 NULL보다 넓다.
+        List<Long> placed = jdbcTemplate.queryForList("""
+                SELECT DISTINCT bi.board_id FROM board_item bi JOIN board b ON b.id = bi.board_id
+                 WHERE b.user_id = ? AND bi.z_order IS NOT NULL ORDER BY bi.board_id LIMIT 20
+                """, Long.class, userId);
+        assertThat(placed).as("배치가 있는 보드가 없습니다 — seed.sql의 배치 가정을 확인하세요").isNotEmpty();
+        benchmark("BoardItemRepository.findItemsByBoardIds  (배치가 있는 보드 " + placed.size() + "개)", i ->
+                boardItemRepository.findItemsByBoardIds(placed).size());
+
+        // 보드 하나 조회(GET /api/boards/list)는 응답에 배치를 담느라 board_item을 지연 로딩한다.
+        benchmark("보드 단건 + 배치 지연 로딩  (findById → getBoardItems)", i ->
+                boardRepository.findById(placed.get(i % placed.size())).orElseThrow().getBoardItems().size());
+    }
+
+    /**
+     * 배치가 있는 사용자 보드 저장 — 보드 1행 + 콘텐츠 8행. 배치 없는 저장과 나란히 잰다.
+     *
+     * <p>board_item의 유니크 제약 셋(칸·콘텐츠·겹침 순위)은 DEFERRABLE이라 커밋할 때 검사한다. 측정은 롤백으로 끝나
+     * 커밋이 없으므로 {@code SET CONSTRAINTS ALL IMMEDIATE}로 문장마다 검사하게 해, 검사 비용이 측정에 들어가게 한다.</p>
+     */
+    @Test
+    @DisplayName("[성능] 사용자 보드 저장 — 배치 있음/없음")
+    void benchmarkUserBoardSave() {
+        Long userId = userWithMostLikes();
+        com.crates.crates.entity.user.User owner = userRepository.findById(userId).orElseThrow();
+        List<Long> ids = jdbcTemplate.queryForList("SELECT id FROM content ORDER BY id LIMIT 8", Long.class);
+        List<Content> contents = contentRepository.findAllById(ids);
+        List<ItemLayout> layout = java.util.stream.IntStream.rangeClosed(1, 8)
+                .mapToObj(z -> new ItemLayout(10f * z, z <= 4 ? 30f : 70f, -5f + z, 9 - z)).toList();
+        jdbcTemplate.execute("SET CONSTRAINTS ALL IMMEDIATE");
+
+        benchmark("사용자 보드 저장  (배치 없음, 보드+8칸·쓰기·롤백)", i ->
+                saveUserBoard(owner, "bench-plain-" + i, contents, null), "픽스처");
+
+        benchmark("사용자 보드 저장  (배치 있음, 보드+8칸·쓰기·롤백)", i ->
+                saveUserBoard(owner, "bench-layout-" + i, contents, layout), "픽스처");
+    }
+
+    private int saveUserBoard(com.crates.crates.entity.user.User owner, String title,
+                              List<Content> contents, List<ItemLayout> layout) {
+        Board board = Board.builder().boardType(BoardType.USER_CUSTOM).user(owner).visibility(Visibility.PUBLIC)
+                .title(title).likeCount(0L).createdAt(java.time.LocalDateTime.now()).build();
+        board.replaceContents(contents, layout);
+        boardRepository.saveAndFlush(board);
+        return board.getBoardItems().size();
+    }
+
+    // ── 사용자 행동 로그 (board-schema 13장) ────────────────────────────────
+
+    /**
+     * 좋아요·취소·수정마다 같은 트랜잭션에서 도는 두 쿼리 — 아이템의 콘텐츠 키 조회와 로그 INSERT.
+     * 좋아요 경로에서는 보드 행을 잠근 채 돌아, 길어지면 같은 보드의 다음 좋아요가 기다린다.
+     *
+     * <p>INSERT는 시딩한 실제 payload를 그대로 쓴다. 수정 로그는 2KB를 넘어 TOAST 압축을 거친다.</p>
+     */
+    @Test
+    @DisplayName("[성능] 행동 로그 — 콘텐츠 키 조회, 로그 저장")
+    void benchmarkUserEventLog() {
+        Long userId = userWithMostLikes();
+        List<Long> eight = jdbcTemplate.queryForList(
+                "SELECT content_id FROM board_item WHERE board_id = (SELECT min(board_id) FROM board_feedback WHERE user_id = ?) ORDER BY slot_no",
+                Long.class, userId);
+        List<Long> sixteen = jdbcTemplate.queryForList(
+                "SELECT id FROM content ORDER BY id LIMIT 16", Long.class);
+
+        benchmark("ContentRepository.findKeysByIds  (좋아요·취소, 8건)", i ->
+                contentRepository.findKeysByIds(eight).size());
+
+        benchmark("ContentRepository.findKeysByIds  (수정 전후, 16건)", i ->
+                contentRepository.findKeysByIds(sixteen).size());
+
+        Map<String, Object> likePayload = samplePayload("BOARD_LIKE");
+        Map<String, Object> editPayload = samplePayload("BOARD_EDIT");
+        System.out.printf("%n   payload 크기: BOARD_LIKE %d바이트, BOARD_EDIT %d바이트 (JSON 문자열 기준)%n",
+                jsonLength(likePayload), jsonLength(editPayload));
+
+        benchmark("UserEventLogRepository.save  (BOARD_LIKE·쓰기·롤백)", i -> {
+            userEventLogRepository.saveAndFlush(new UserEventLog(userId, UserEventType.BOARD_LIKE, likePayload));
+            return 1;
+        }, "픽스처");
+
+        benchmark("UserEventLogRepository.save  (BOARD_EDIT·쓰기·롤백)", i -> {
+            userEventLogRepository.saveAndFlush(new UserEventLog(userId, UserEventType.BOARD_EDIT, editPayload));
+            return 1;
+        }, "픽스처");
+    }
+
+    /**
+     * 매일 새벽 내보내기(UserEventLogExporter)의 하루치 조회. 날짜 인덱스가 없어 테이블 전체를 훑으므로,
+     * 반복 측정 대신 이벤트가 가장 많은 날(시나리오 마지막 날 부근)로 EXPLAIN ANALYZE를 세 번 떠서 시간과 블록을 본다.
+     */
+    @Test
+    @DisplayName("[성능] 행동 로그 내보내기 — 하루치 조회")
+    void benchmarkEventLogExportDay() {
+        String busiest = jdbcTemplate.queryForObject("""
+                SELECT d::text FROM (SELECT (created_at AT TIME ZONE 'Asia/Seoul')::date d, count(*) n
+                                       FROM user_event_log GROUP BY 1) t
+                 WHERE d < (now() AT TIME ZONE 'Asia/Seoul')::date ORDER BY n DESC, d DESC LIMIT 1
+                """, String.class);
+        assertThat(busiest).as("행동 로그가 없습니다 — seed.sql의 로그 생성을 확인하세요").isNotNull();
+        Long total = jdbcTemplate.queryForObject("SELECT count(*) FROM user_event_log", Long.class);
+        String size = jdbcTemplate.queryForObject(
+                "SELECT pg_size_pretty(pg_total_relation_size('user_event_log'))", String.class);
+
+        String line = "─".repeat(100);
+        System.out.println("\n" + line);
+        System.out.printf("📊 내보내기 하루치 조회 — 가장 많은 날 %s (전체 %,d행, 테이블 %s)%n", busiest, total, size);
+        System.out.println(line);
+        for (int run = 1; run <= 3; run++) {
+            List<String> plan = jdbcTemplate.queryForList("""
+                    EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+                    SELECT id, user_id, event_type, created_at, payload::text
+                      FROM user_event_log
+                     WHERE created_at >= (?::date)::timestamp AT TIME ZONE 'Asia/Seoul'
+                       AND created_at <  (?::date + 1)::timestamp AT TIME ZONE 'Asia/Seoul'
+                     ORDER BY id
+                    """, String.class, busiest, busiest);
+            System.out.printf("   [%d회째]%n", run);
+            plan.forEach(row -> System.out.println("     " + row));
+        }
+        System.out.println(line);
+    }
+
+    private Map<String, Object> samplePayload(String eventType) {
+        String json = jdbcTemplate.queryForObject(
+                "SELECT payload::text FROM user_event_log WHERE event_type = ? ORDER BY id DESC LIMIT 1",
+                String.class, eventType);
+        assertThat(json).as("시딩한 %s 로그가 없습니다", eventType).isNotNull();
+        try {
+            return objectMapper.readValue(json, new TypeReference<>() {});
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
+    private int jsonLength(Map<String, Object> payload) {
+        try {
+            return objectMapper.writeValueAsBytes(payload).length;
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
     }
 
     // ── ContentRepository ───────────────────────────────────────────────────
