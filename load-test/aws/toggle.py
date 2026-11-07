@@ -1,5 +1,5 @@
 """AWS 좋아요→취소 스윕. 서버 포화까지 올리고 주변 세 지점을 두 번 반복한다."""
-import argparse,json,math,os,subprocess,time
+import argparse,itertools,json,math,os,subprocess,time
 from pathlib import Path
 from common import ROOT,rows,write_json
 from prepare import users
@@ -59,12 +59,11 @@ def main():
         stage(out/(label+'-warmup'),prepared,rate,a.warmup_seconds)
         r=stage(out/label,prepared,rate,a.seconds);results.append(r);write_json(out/'results.json',results);return r
     prev=max(1,a.rates[0]//2)
-    for n,rate in enumerate(a.rates,1):
+    for n,rate in enumerate(itertools.chain(a.rates, (a.rates[-1]*2**power for power in itertools.count(1))),1):
         r=measure(rate,f'step-{n}-rate-{rate}')
         if r['saturated']:
             for repeat in range(1,a.repeats+1):
                 for j,finer in enumerate(sorted(set([prev,(prev+rate)//2,rate])),1):measure(finer,f'refine-{repeat}-{j}-rate-{finer}')
             break
         prev=rate
-    else: raise RuntimeError('지정 최고 RATE까지 포화 미관측 — 더 높은 단계 필요')
 if __name__=='__main__':main()
