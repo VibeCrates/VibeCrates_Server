@@ -90,5 +90,9 @@ for pair in "$users:$e_users:계정" "$ai:$e_ai:AI 보드" "$search:$e_search:�
     [ "$got" = "$want" ] || { echo "  ⚠️  ${name}이(가) 기대와 다릅니다: ${got} (기대 ${want})" >&2; exit 1; }
 done
 
+# 배치와 행동 로그(seed.sql 머리말의 가정). 비율로 만든 값이라 기대값과 맞추지 않고 보여 주기만 한다.
+echo "  배치가 있는 사용자 보드: $($PSQL1 "SELECT count(DISTINCT bi.board_id) FROM board_item bi JOIN board b ON b.id = bi.board_id WHERE b.title LIKE 'loadtest-custom-%' AND bi.z_order IS NOT NULL") / ${custom}"
+echo "  행동 로그: $($PSQL1 "SELECT string_agg(event_type || ' ' || n, ' / ' ORDER BY event_type) FROM (SELECT event_type, count(*) n FROM user_event_log l JOIN users u ON u.id = l.user_id WHERE u.login_id LIKE 'loadtest_u%' GROUP BY 1) t")"
+
 echo
 echo "비밀번호는 모두 Loadtest!234 입니다. 정리는 load-test/cleanup.sql."

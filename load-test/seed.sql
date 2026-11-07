@@ -19,9 +19,18 @@
 --           눌러야 저장되므로 "검색 좋아요 1번 = 검색 보드(SEARCH_RECOMMEND) 1개"다. 검색 자체는 DB에 남지 않는다.
 --           검색 보드는 모두 서로 다른 (검색어, 구성)이라고 본다 — 인기 검색어에 좋아요가 모이는 실제보다 많은 상한이다.
 --   인기    인기 보드 좋아요는 지프 분포(:zipf_s). 순위 r인 보드가 1/r^s 에 비례해 받는다.
+--   배치    사용자 보드의 절반은 포스터를 옮기고 돌린 배치가 있다(board-schema 12장). 추천·검색 보드는 기본 배치(NULL)다.
+--   로그    행동 로그(board-schema 13장)를 위 행동에 맞춰 만든다 — 좋아요마다 BOARD_LIKE, 사용자 보드마다 BOARD_EDIT.
+--           시딩에 없는 행동은 로그만 만든다(보드·좋아요 수는 그대로 둬 이전 측정과 비교되게 한다, 2026-11-07 결정).
+--             좋아요 취소 = 좋아요의 10%, 내 보드 삭제 = 사용자 보드의 5%, 사진 저장 = 사용자마다 하루 0.2번
 --
 -- 기본값(3 / 1 / 0.6 / 1.0 / 1)이면
 --   계정 1,200 / AI 보드 136,800 / 검색 보드 114,000 / 사용자 보드 114,000 / board_item 2,918,400 / 좋아요 456,000
+--   행동 로그 약 64만 행(좋아요 456,000 / 취소 약 45,600 / 수정 114,000 / 삭제 약 5,700 / 사진 저장 22,800)
+--
+-- 배치와 로그는 난수 순서를 건드리지 않게 만든다. 배치는 random() 대신 해시로 정하고, 로그는 다른 데이터를 다
+-- 만든 뒤 맨 끝에서 만든다. 중간에 random()을 더 부르면 그 뒤의 인기 좋아요 추첨이 달라져, 같은 인자로도
+-- 이전 시딩과 다른 데이터가 된다.
 --
 -- psql 변수
 --   :likes_per_day   하루 좋아요 수
@@ -173,9 +182,19 @@ SELECT b.k, bo.id AS board_id, b.kind, b.actor, b.created_at
 FROM plan_board b JOIN board bo ON bo.title = b.title;
 CREATE UNIQUE INDEX ON board_map (k);
 
-INSERT INTO board_item (board_id, content_id, slot_no)
-SELECT m.board_id, i.content_id, i.slot
-FROM plan_item i JOIN board_map m USING (k)
+-- 사용자 보드의 절반에 배치를 준다. 값은 보드·칸 번호의 해시로 정한다(머리말: 난수 순서를 바꾸지 않으려고).
+-- 범위는 앱이 받는 범위(V3 ck_board_item_layout_range) 안이고, z는 보드마다 1~8을 한 번씩 쓴다.
+INSERT INTO board_item (board_id, content_id, slot_no, pos_x, pos_y, rotation, z_order)
+SELECT m.board_id, i.content_id, i.slot,
+       CASE WHEN l.placed THEN (5 + mod(abs(hashtext('x' || m.k || '-' || i.slot)), 9001) / 100.0)::real END,
+       CASE WHEN l.placed THEN (10 + mod(abs(hashtext('y' || m.k || '-' || i.slot)), 8001) / 100.0)::real END,
+       CASE WHEN l.placed THEN (mod(abs(hashtext('r' || m.k || '-' || i.slot)), 6001) / 100.0 - 30)::real END,
+       CASE WHEN l.placed
+            THEN row_number() OVER (PARTITION BY m.board_id ORDER BY hashtext('z' || m.k || '-' || i.slot), i.slot)::smallint
+       END
+FROM plan_item i
+JOIN board_map m USING (k)
+CROSS JOIN LATERAL (SELECT m.kind = 'CUSTOM' AND mod(abs(hashtext('placed' || m.k)), 2) = 0 AS placed) l
 ORDER BY m.board_id, i.slot;
 
 -- ── 좋아요 ──────────────────────────────────────────────────────────────
@@ -245,9 +264,99 @@ FROM (SELECT f.board_id, count(*) n FROM board_feedback f
       JOIN board_map m ON m.board_id = f.board_id GROUP BY f.board_id) c
 WHERE board.id = c.board_id;
 
+-- ── 행동 로그 (board-schema 13장) ───────────────────────────────────────
+-- 여기부터는 random()을 써도 된다. 위의 데이터는 이미 다 만들었다.
+--
+-- payload는 앱(UserEventLogger)이 만드는 모양과 크기를 맞춘다. 아이템은 진짜 콘텐츠의 {id, type, sourceKey}다.
+-- 짧은 가짜 값으로 채우면 행 크기와 TOAST 압축(2KB 넘는 수정 로그)이 실제와 달라진다.
+CREATE TEMP TABLE board_json ON COMMIT DROP AS
+SELECT m.board_id, m.k, m.kind, m.created_at, bo.board_type, bo.title,
+       jsonb_agg(jsonb_build_object('id', c.id, 'type', c.dtype, 'sourceKey', c.source_key) ORDER BY bi.slot_no) AS items
+FROM board_map m
+JOIN board bo ON bo.id = m.board_id
+JOIN board_item bi ON bi.board_id = m.board_id
+JOIN content c ON c.id = bi.content_id
+GROUP BY m.board_id, m.k, m.kind, m.created_at, bo.board_type, bo.title;
+CREATE UNIQUE INDEX ON board_json (board_id);
+
+CREATE TEMP TABLE content_json ON COMMIT DROP AS
+SELECT p.pos, jsonb_build_object('id', c.id, 'type', c.dtype, 'sourceKey', c.source_key) AS item
+FROM content_pos p JOIN content c ON c.id = p.id;
+CREATE UNIQUE INDEX ON content_json (pos);
+
+CREATE TEMP TABLE plan_event (user_id bigint, event_type text, payload jsonb, created_at timestamp) ON COMMIT DROP;
+
+-- 좋아요 1번 = BOARD_LIKE 1행. 그 중 10%는 나중에 취소했다(BOARD_UNLIKE). 취소는 로그만 만든다.
+INSERT INTO plan_event
+SELECT f.user_id, 'BOARD_LIKE',
+       jsonb_build_object('v', 1, 'board', jsonb_build_object(
+           'boardId', j.board_id, 'boardType', j.board_type, 'title', j.title, 'items', j.items)),
+       f.created_at
+FROM board_feedback f JOIN board_json j ON j.board_id = f.board_id;
+
+INSERT INTO plan_event
+SELECT user_id, 'BOARD_UNLIKE', payload, created_at + random() * (now() - created_at)
+FROM plan_event WHERE event_type = 'BOARD_LIKE' AND random() < 0.10;
+
+-- 사용자 보드 1개 = 수정 저장 1번. 다른 보드에서 한 칸을 바꿔 내 보드로 저장한 것이다(시딩 머리말의 "수정").
+-- 원래 보드는 홈 추천·검색 결과(저장 전)·남의 보드가 1/3씩이다.
+INSERT INTO plan_event
+SELECT x.actor, 'BOARD_EDIT',
+       jsonb_build_object(
+           'v', 1,
+           'source', jsonb_build_object('boardId', x.source_id, 'boardType', x.source_type),
+           'savedBoardId', x.board_id,
+           'title', jsonb_build_object('before', 'loadtest-origin-' || x.k, 'after', x.title),
+           'contents', jsonb_build_object(
+               'before', jsonb_set(x.items, ARRAY[x.slot::text], r.item),
+               'after', x.items,
+               'removed', jsonb_build_array(r.item),
+               'added', jsonb_build_array(x.items -> x.slot))),
+       x.created_at
+FROM (
+    SELECT j.*, m.actor, floor(random() * 8)::int AS slot,
+           floor(random() * (SELECT count(*) FROM content_pos))::int AS pos,
+           CASE floor(random() * 3)::int WHEN 0 THEN 'TASTE_RECOMMEND' WHEN 1 THEN 'SEARCH_RECOMMEND' ELSE 'USER_CUSTOM' END AS source_type,
+           NULL::bigint AS source_id
+    FROM board_json j JOIN board_map m USING (board_id)
+    WHERE j.kind = 'CUSTOM'
+) x
+JOIN content_json r USING (pos);
+UPDATE plan_event SET payload = jsonb_set(payload, '{source,boardId}', to_jsonb(1 + floor(random() * 360000)::bigint))
+WHERE event_type = 'BOARD_EDIT' AND payload #>> '{source,boardType}' = 'USER_CUSTOM';
+
+-- 사용자 보드의 5%는 나중에 지웠다(BOARD_DELETE). 로그만 만든다 — 보드는 남겨 보드 수를 이전 측정과 같게 둔다.
+INSERT INTO plan_event
+SELECT m.actor, 'BOARD_DELETE',
+       jsonb_build_object('v', 1, 'board', jsonb_build_object(
+           'boardId', j.board_id, 'boardType', j.board_type, 'title', j.title, 'items', j.items)),
+       j.created_at + random() * (now() - j.created_at)
+FROM board_json j JOIN board_map m USING (board_id)
+WHERE j.kind = 'CUSTOM' AND random() < 0.05;
+
+-- 사진 저장은 사용자마다 하루 0.2번. 좋아요한 보드 중 하나를 그대로(edited=false) 찍었다고 본다.
+INSERT INTO plan_event
+SELECT p.user_id, 'BOARD_CAPTURE',
+       jsonb_build_object('v', 1, 'edited', false, 'board', jsonb_build_object(
+           'boardId', j.board_id, 'boardType', j.board_type, 'title', j.title, 'items', j.items)),
+       f.created_at + random() * (now() - f.created_at)
+FROM plan_user p
+CROSS JOIN LATERAL generate_series(1, round(p.days * 0.2)::int) g
+CROSS JOIN LATERAL (
+    SELECT board_id, created_at FROM board_feedback
+     WHERE user_id = p.user_id
+     ORDER BY created_at, board_id
+     OFFSET floor(random() * (p.ai_n + p.search_n + p.pop_n)) LIMIT 1) f
+JOIN board_json j ON j.board_id = f.board_id;
+
+-- 시각 순서대로 넣는다. 앱은 행동이 일어날 때마다 넣으므로 id가 시간 순이고, 내보내기(UserEventLogExporter)가
+-- 하루치를 고를 때 그 날의 행이 힙 한곳에 모인다. 순서 없이 넣으면 그 조회가 실제와 다른 블록을 읽는다.
+INSERT INTO user_event_log (user_id, event_type, payload, created_at)
+SELECT user_id, event_type, payload, created_at FROM plan_event ORDER BY created_at;
+
 COMMIT;
 
-ANALYZE users; ANALYZE user_vector; ANALYZE board; ANALYZE board_item; ANALYZE board_feedback;
+ANALYZE users; ANALYZE user_vector; ANALYZE board; ANALYZE board_item; ANALYZE board_feedback; ANALYZE user_event_log;
 
 -- 셸이 파싱할 수 있도록 한 줄로 내보낸다. seed.sh가 기대값과 비교한다.
 --   실제·기대 쌍(계정, AI 보드, 검색 보드, 사용자 보드, board_item, 좋아요, 최다 사용자 좋아요, 최다 사용자 보드),
