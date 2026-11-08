@@ -6,7 +6,7 @@ from prepare import users
 from collect import Metrics,cloudwatch,pg_reset,pg_snapshot
 from sweep import measurement_start
 
-def wait_for_idle(metrics,out,timeout=300):
+def wait_for_idle(metrics,out,timeout=300,filename='settle.json'):
     started=time.monotonic();deadline=started+timeout;samples=[];quiet_since=None;last_count=None
     while True:
         snapshot=metrics.snapshot()
@@ -21,7 +21,7 @@ def wait_for_idle(metrics,out,timeout=300):
         quiet_since=(quiet_since if quiet_since is not None else now) if quiet else None
         samples.append({'at':time.time(),'hikari_active':active,'hikari_pending':pending,'recalculation_pending':queued,'recalculation_count':count})
         settled=quiet_since is not None and now-quiet_since>=10
-        write_json(out/'settle.json',{'wait_seconds':now-started,'settled':settled,'samples':samples,
+        write_json(out/filename,{'wait_seconds':now-started,'settled':settled,'samples':samples,
           'method':'Hikari active/pending and recalculation pending zero, completion counter stable for 10 seconds'})
         if settled:return
         if now>=deadline:raise RuntimeError('이전 단계 재계산이 5분 안에 가라앉지 않았습니다')
@@ -57,6 +57,8 @@ def stage(out,prepared,rate,seconds):
         with open(out/'k6.log','w') as log:
             p=subprocess.run([os.environ.get('K6_BIN','k6'),'run','--quiet','--log-format','json','--no-usage-report','--summary-trend-stats','avg,med,p(95),p(99),count','--summary-export',str(out/'summary.json'),str(ROOT/'load-test/scenarios/aws-like-toggle.js')],env=env,stdout=log,stderr=subprocess.STDOUT)
         after=metrics.snapshot();write_json(out/'cache-after.json',after)
+        wait_for_idle(metrics,out,filename='post-settle.json')
+        write_json(out/'cache-after-idle.json',metrics.snapshot())
     finally: metrics.close()
     if p.returncode not in (0,99): raise RuntimeError('k6 쌍 실행 오류')
     start=measurement_start(out/'k6.log')

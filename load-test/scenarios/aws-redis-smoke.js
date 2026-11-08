@@ -3,10 +3,12 @@
 // 운영 키를 건드리기 전에 별도 키로 확장 로딩과 DEL 왕복을 확인한다.
 import redis from 'k6/x/redis';
 import { check } from 'k6';
+import { Counter } from 'k6/metrics';
 
 const client = new redis.Client(__ENV.REDIS_URL || 'redis://localhost:6379/0');
+const completed = new Counter('redis_smoke_completed');
 const acquireLock = "return redis.call('SET', KEYS[1], ARGV[1], 'NX', 'PX', ARGV[2]) and 1 or 0";
-export const options = { vus: 1, iterations: 1, thresholds: { checks: ['rate==1'] } };
+export const options = { vus: 1, iterations: 1, thresholds: { checks: ['rate==1'], redis_smoke_completed: ['count==1'] } };
 export default async function () {
   const key = `loadtest:redis-smoke:${Date.now()}`;
   await client.set(key, 'ok', 30);
@@ -22,4 +24,5 @@ export default async function () {
   } finally {
     await client.del(key);
   }
+  completed.add(1);
 }
