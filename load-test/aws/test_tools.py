@@ -282,6 +282,20 @@ class ToolsTest(unittest.TestCase):
 
 
 class ToggleFixtureTest(unittest.TestCase):
+    def test_metrics_gap_during_drain_preserves_complete_measurement_counters(self):
+        from toggle import record_metrics_gap
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)
+            (path/'ecs-task-0.promlog').write_text('sample')
+            (path/'post-settle.json').write_text(json.dumps({'wait_seconds':147,'samples':[{'hikari_pending':2}]}))
+            with patch('toggle.latest_sample',return_value=(220,{'counter':3})),patch('toggle.ecs_targets',return_value=['same-task']),patch('toggle.request',return_value={}):
+                snapshot,changed=record_metrics_gap(Mock(targets=['same-task']),path,RuntimeError('ECS Exec 새 지표 샘플 시간초과'),False)
+            self.assertFalse(changed)
+            self.assertEqual(snapshot,{'same-task':{'counter':3}})
+            self.assertFalse(json.loads((path/'task-change.json').read_text())['counters_right_censored'])
+            self.assertEqual(json.loads((path/'post-settle.json').read_text())['wait_seconds'],147)
+
     def test_toggle_records_task_replacement_without_discarding_http_saturation(self):
         from toggle import stage
         from unittest.mock import Mock

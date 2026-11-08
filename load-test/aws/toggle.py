@@ -45,6 +45,36 @@ def prepare(directory,rate,seconds):
         actors.append({**user,'boards':allowed})
     return {'actors':actors,'readers':data['screens']}
 
+def record_metrics_gap(metrics,out,error,counters_right_censored):
+    expected=('단계 중 ECS 작업 목록이 바뀌었습니다 — 측정 무효','수집할 ECS 작업이 없습니다',
+        'ECS Exec 연속 수집기가 종료됐습니다','ECS Exec 새 지표 샘플 시간초과')
+    if str(error) not in expected:raise error
+    snapshot={};last_times={}
+    for index,target in enumerate(metrics.targets):
+        sample=latest_sample((out/f'ecs-task-{index}.promlog').read_text())
+        if sample is None:raise RuntimeError('ECS 작업의 마지막 지표 표본이 없습니다')
+        last_times[target],snapshot[target]=sample
+    try:current=ecs_targets()
+    except RuntimeError as target_error:
+        if str(target_error)!='수집할 ECS 작업이 없습니다':raise
+        current=[]
+    changed=set(current)!=set(metrics.targets)
+    write_json(out/'task-change.json',{'before_tasks':metrics.targets,'after_tasks':current,
+        'last_sample_times':last_times,'at':time.time(),'cause':str(error),
+        'tasks_changed':changed,'counters_right_censored':counters_right_censored})
+    path=out/'post-settle.json'
+    status=json.loads(path.read_text()) if path.exists() else {'wait_seconds':0,'samples':[]}
+    write_json(path,{**status,'settled':False,'reason':str(error)})
+    started=time.monotonic()
+    while True:
+        try:
+            request('/api/auth/login',body={'loginId':'loadtest_u0','pwd':'Loadtest!234'})
+            write_json(out/'task-recovery.json',{'ready':True,'wait_seconds':time.monotonic()-started})
+            return snapshot,changed
+        except RuntimeError:
+            if time.monotonic()-started>=300:raise
+            time.sleep(5)
+
 def stage(out,prepared,rate,seconds,settle_before=True,settle_after=True):
     out,prepared=out.resolve(),prepared.resolve()
     out.mkdir(parents=True)
@@ -58,39 +88,19 @@ def stage(out,prepared,rate,seconds,settle_before=True,settle_after=True):
         env=dict(os.environ,RATE=str(rate),AWS_SECONDS=str(seconds),AWS_STAGE_FILE=str(out/'stage.json'),K6_NO_USAGE_REPORT='true')
         with open(out/'k6.log','w') as log:
             p=subprocess.run([os.environ.get('K6_BIN','k6'),'run','--quiet','--log-format','json','--no-usage-report','--summary-trend-stats','avg,med,p(95),p(99),count','--summary-export',str(out/'summary.json'),str(ROOT/'load-test/scenarios/aws-like-toggle.js')],env=env,stdout=log,stderr=subprocess.STDOUT)
-        changed=False
+        changed=False;censored=False
         try:after=metrics.snapshot()
         except RuntimeError as error:
-            if str(error) not in ('단계 중 ECS 작업 목록이 바뀌었습니다 — 측정 무효','수집할 ECS 작업이 없습니다'):raise
-            after={};last_times={}
-            for index,target in enumerate(metrics.targets):
-                sample=latest_sample((out/f'ecs-task-{index}.promlog').read_text())
-                if sample is None:raise RuntimeError('교체된 ECS 작업의 마지막 지표 표본이 없습니다')
-                last_times[target],after[target]=sample
-            changed=True
-            try:current=ecs_targets()
-            except RuntimeError as target_error:
-                if str(target_error)!='수집할 ECS 작업이 없습니다':raise
-                current=[]
-            write_json(out/'task-change.json',{'before_tasks':metrics.targets,'after_tasks':current,
-                'last_sample_times':last_times,'at':time.time(),'counters_right_censored':True})
-            write_json(out/'post-settle.json',{'wait_seconds':0,'settled':False,'samples':[],
-                'reason':'ECS task changed. Old task counters stop at its last complete sample.'})
-            started=time.monotonic()
-            while True:
-                try:
-                    request('/api/auth/login',body={'loginId':'loadtest_u0','pwd':'Loadtest!234'})
-                    write_json(out/'task-recovery.json',{'ready':True,'wait_seconds':time.monotonic()-started})
-                    break
-                except RuntimeError:
-                    if time.monotonic()-started>=300:raise
-                    time.sleep(5)
+            after,changed=record_metrics_gap(metrics,out,error,True);censored=True
         write_json(out/'cache-after.json',after)
-        if settle_after and not changed:
-            settled=wait_for_idle(metrics,out,filename='post-settle.json')
-            snapshot=metrics.snapshot()
-            write_json(out/'cache-after-settle.json',snapshot)
-            if settled:write_json(out/'cache-after-idle.json',snapshot)
+        if settle_after and not censored:
+            try:
+                settled=wait_for_idle(metrics,out,filename='post-settle.json')
+                snapshot=metrics.snapshot()
+                write_json(out/'cache-after-settle.json',snapshot)
+                if settled:write_json(out/'cache-after-idle.json',snapshot)
+            except RuntimeError as error:
+                _,changed=record_metrics_gap(metrics,out,error,False)
     finally: metrics.close()
     if p.returncode not in (0,99): raise RuntimeError('k6 쌍 실행 오류')
     start=measurement_start(out/'k6.log')
@@ -105,7 +115,7 @@ def stage(out,prepared,rate,seconds,settle_before=True,settle_after=True):
     apis={name:{**m.get(f'toggle_duration{{name:{name}}}',{}),'failure_rate':get(f'toggle_failed{{name:{name}}}','value',1)} for name in ('like','unlike','read')}
     if any(x.get('count',0)==0 for x in apis.values()): raise RuntimeError('시나리오 표본 누락')
     failed=max(apis['like']['failure_rate'],apis['unlike']['failure_rate'])
-    result={'label':out.name,'rate':rate,'apis':apis,'failure_rate':failed,'dropped_iterations':drop,'completion_ratio':completion,'actual_pairs_per_second':count/seconds,'successful_pairs_per_second':get('toggle_success_on_time','count')/seconds,'saturated':failed>=.05 or drop>0 or completion<.9,'goal_pass':all(x['failure_rate']<.01 and x['p(95)']<500 for x in apis.values()),'ecs_task_changed':changed}
+    result={'label':out.name,'rate':rate,'apis':apis,'failure_rate':failed,'dropped_iterations':drop,'completion_ratio':completion,'actual_pairs_per_second':count/seconds,'successful_pairs_per_second':get('toggle_success_on_time','count')/seconds,'saturated':failed>=.05 or drop>0 or completion<.9,'goal_pass':all(x['failure_rate']<.01 and x['p(95)']<500 for x in apis.values()),'ecs_task_changed':changed,'ecs_metrics_censored':censored}
     write_json(out/'result.json',result)
     print(json.dumps(result,ensure_ascii=False),flush=True);return result
 
