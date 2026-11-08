@@ -32,6 +32,7 @@ const apiOnTime = new Counter('aws_api_completed_on_time');
 const controlDuration = new Trend('cache_control_duration', true);
 const forcedMiss = new Rate('home_forced_miss');
 const errors = new Counter('workload_errors');
+const lockTimeouts = new Counter('home_lock_timeouts');
 
 const screenNames = apiOnly ? [] : ['home', 'search_results', 'archive', 'onboarding'];
 const names = apiOnly ? [{home:'recommend', search_results:'search_board', mine:'my_boards'}[apiOnly] || apiOnly] : ['onboarding_status', 'recommend', 'popular', 'my_boards', 'archive',
@@ -138,7 +139,12 @@ export async function home() {
         }
         sleep(.01);
       }
-      if (!acquired) problem('홈 추천 잠금 대기 60초 초과 — 측정 무효');
+      if (!acquired) {
+        // 단독 모드의 600명 잠금 큐가 밀린 것은 도착을 처리하지 못한 관측이다.
+        // HTTP가 나가지 않은 일감은 API 구간 내 완료율에 포함되지 않는다.
+        if (apiOnly) { lockTimeouts.add(1); return; }
+        problem('홈 추천 잠금 대기 60초 초과 — 측정 무효');
+      }
       const miss = Math.random() < .5;
       if (__ENV.CACHE_MODE !== 'off' && miss) await client.del(`reco:v1:${user.id}`);
       forcedMiss.add(miss);

@@ -1,5 +1,6 @@
 """RATE=단일 API 요청/초. 일감 준비는 측정 밖, 교체된 작업의 관측도 보존한다."""
 import argparse
+import datetime
 import json
 import math
 import os
@@ -61,10 +62,23 @@ def prepare(directory, name, rate, seconds):
             'expected':{name:math.ceil(rate*seconds)}, 'run':f'{time.time_ns():x}'}
 
 
-def judge(summary, name, rate, seconds, changed=False):
+def late_home_control_abort(log, seconds):
+    start=measurement_start(log)
+    if start is None:return False
+    errors=[]
+    for line in Path(log).read_text().splitlines():
+        try:record=json.loads(line)
+        except ValueError:continue
+        if record.get('msg','').startswith('WORKLOAD_ERROR '):errors.append(record)
+    if not errors or not errors[0]['msg'].startswith('WORKLOAD_ERROR 홈 추천 잠금 대기 60초 초과'):return False
+    try:return all(datetime.datetime.fromisoformat(e['time'].replace('Z','+00:00')).timestamp() >= start+seconds for e in errors)
+    except (KeyError,ValueError):return False
+
+
+def judge(summary, name, rate, seconds, changed=False, late_abort=False):
     m=summary['metrics']
     def get(key, field, default=0):return m.get(key,{}).get(field,default)
-    if get('workload_errors','count')>0:raise RuntimeError('일감/캐시 제어 오류')
+    if get('workload_errors','count')>0 and not late_abort:raise RuntimeError('일감/캐시 제어 오류')
     label=LABEL.get(name,name)
     duration=m.get(f'api_duration{{name:{label}}}',{})
     if duration.get('count',0)==0:raise RuntimeError('API 표본 누락')
@@ -78,6 +92,7 @@ def judge(summary, name, rate, seconds, changed=False):
         'count':duration['count'], 'actual_api_per_second':count/seconds,
         'failure_rate':failed, 'dropped_iterations':drop, 'completion_ratio':count/expected,
         'saturated':changed or failed>=.05 or drop>0 or count/expected<.9,
+        'home_lock_timeouts':get('home_lock_timeouts','count'), 'post_window_control_abort':late_abort,
         'goal_pass':failed<.01 and duration['p(95)']<target, 'ecs_task_changed':changed}
 
 
@@ -117,12 +132,13 @@ def stage(out,prepared,name,rate,seconds,cache_mode='on',settle_before=True,sett
     events=[e for e in service_after.get('events',[]) if e['id'] not in previous and ('unhealthy' in e['message'] or 'replaced' in e['message'])]
     write_json(out/'ecs-replacement-events.json',events)
     changed |= bool(events)
-    if p.returncode not in (0,99):raise RuntimeError(f'k6 실행 실패 {p.returncode}')
+    late_abort=name=='home' and p.returncode==108 and late_home_control_abort(out/'k6.log',seconds)
+    if p.returncode not in (0,99) and not late_abort:raise RuntimeError(f'k6 실행 실패 {p.returncode}')
     start=measurement_start(out/'k6.log')
     if start is None:raise RuntimeError('측정 시작 시각 누락')
     write_json(out/'window.json',{'start':start,'end':start+seconds,'rate':rate,'seconds':seconds})
     pg_snapshot(out/'pgss.json');cloudwatch(out,start,start+seconds)
-    r=judge(json.loads((out/'summary.json').read_text()),name,rate,seconds,changed)
+    r=judge(json.loads((out/'summary.json').read_text()),name,rate,seconds,changed,late_abort)
     r.update(ecs_metrics_censored=censored,cache=cache_delta(before,after))
     # 교체 때 마지막 샘플까지만 비교한다. 카운터 중단을 서버 오류로 바꾸지 않는다.
     cache=r['cache']

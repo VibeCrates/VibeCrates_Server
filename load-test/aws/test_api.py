@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from api_sweep import judge,prepare
+from api_sweep import judge,prepare,late_home_control_abort
 
 class ApiTest(unittest.TestCase):
     def summary(self, count=600, fail=0, drop=0, p95=1000):
@@ -20,6 +20,17 @@ class ApiTest(unittest.TestCase):
         r=judge(self.summary(),'home',10,60,True)
         self.assertTrue(r['saturated']);self.assertEqual(r['actual_api_per_second'],10)
         self.assertEqual(r['p99'],2000)
+    def test_post_window_control_abort_preserves_the_saturated_http_window(self):
+        with tempfile.TemporaryDirectory() as d:
+            log=Path(d)/'k6.log'
+            for stamp,first,expected in [('1970-01-01T00:02:50Z','홈 추천 잠금 대기 60초 초과',True),('1970-01-01T00:02:30Z','홈 추천 잠금 대기 60초 초과',False),('1970-01-01T00:02:50Z','홈 캐시 제어 실패',False)]:
+                log.write_text('\n'.join(json.dumps(v,ensure_ascii=False) for v in [{'msg':'AWS_STAGE_START 100000'}, {'msg':'WORKLOAD_ERROR '+first,'time':stamp}]))
+                self.assertEqual(late_home_control_abort(log,60),expected)
+        s=self.summary(count=400,drop=100);s['metrics']['workload_errors']={'count':1}
+        with self.assertRaises(RuntimeError):judge(s,'home',10,60)
+        r=judge(s,'home',10,60,late_abort=True)
+        self.assertTrue(r['saturated']);self.assertTrue(r['post_window_control_abort'])
+
     def test_read_prepares_one_api_without_writes_or_token_generation(self):
         data={'screens':[{'id':1}], 'actors':[{'id':2}]}
         with tempfile.TemporaryDirectory() as d,patch('api_sweep.users',return_value=data),patch('api_sweep.screen_prepare') as writes,patch('api_sweep.rows') as db:
