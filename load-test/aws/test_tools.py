@@ -282,6 +282,30 @@ class ToolsTest(unittest.TestCase):
 
 
 class ToggleFixtureTest(unittest.TestCase):
+    def test_toggle_waits_for_active_and_queued_recalculations(self):
+        from toggle import wait_for_idle
+        from unittest.mock import Mock
+        clock=[0]
+        def sleep(seconds):clock[0]+=seconds
+        def snapshot():
+            return {'task':{'hikaricp_connections_active':int(clock[0]<2),
+                'hikaricp_connections_pending':0,'crates_user_vector_recalculation_pending':int(clock[0]<4),
+                'crates_user_vector_recalculation_seconds_count':min(clock[0],6)}}
+        with tempfile.TemporaryDirectory() as tmp, patch('toggle.time.monotonic',side_effect=lambda:clock[0]), patch('toggle.time.sleep',side_effect=sleep):
+            wait_for_idle(Mock(snapshot=snapshot),Path(tmp))
+            result=json.loads((Path(tmp)/'settle.json').read_text())
+        self.assertTrue(result['settled'])
+        self.assertGreaterEqual(result['wait_seconds'],18)
+
+    def test_toggle_rejects_a_backlog_after_the_wait_limit(self):
+        from toggle import wait_for_idle
+        from unittest.mock import Mock
+        metrics=Mock(snapshot=lambda:{'task':{'hikaricp_connections_active':1}})
+        with tempfile.TemporaryDirectory() as tmp, patch('toggle.time.monotonic',side_effect=[0,0,300]), patch('toggle.time.sleep'):
+            with self.assertRaises(RuntimeError):wait_for_idle(metrics,Path(tmp))
+            result=json.loads((Path(tmp)/'settle.json').read_text())
+        self.assertFalse(result['settled'])
+
     def fixture(self):
         from toggle import prepare
         data = {'actors': [{'id': i, 'token': 'fixture'} for i in range(1, 601)],

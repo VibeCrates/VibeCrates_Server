@@ -6,6 +6,28 @@ from prepare import users
 from collect import Metrics,cloudwatch,pg_reset,pg_snapshot
 from sweep import measurement_start
 
+def wait_for_idle(metrics,out,timeout=300):
+    started=time.monotonic();deadline=started+timeout;samples=[];quiet_since=None;last_count=None
+    while True:
+        snapshot=metrics.snapshot()
+        def total(prefix):
+            return sum(value for task in snapshot.values() for key,value in task.items() if key.startswith(prefix))
+        active=total('hikaricp_connections_active')
+        pending=total('hikaricp_connections_pending')
+        queued=total('crates_user_vector_recalculation_pending')
+        count=total('crates_user_vector_recalculation_seconds_count')
+        quiet=active==0 and pending==0 and queued==0 and count==last_count
+        now=time.monotonic()
+        quiet_since=(quiet_since if quiet_since is not None else now) if quiet else None
+        samples.append({'at':time.time(),'hikari_active':active,'hikari_pending':pending,'recalculation_pending':queued,'recalculation_count':count})
+        settled=quiet_since is not None and now-quiet_since>=10
+        write_json(out/'settle.json',{'wait_seconds':now-started,'settled':settled,'samples':samples,
+          'method':'Hikari active/pending and recalculation pending zero, completion counter stable for 10 seconds'})
+        if settled:return
+        if now>=deadline:raise RuntimeError('이전 단계 재계산이 5분 안에 가라앉지 않았습니다')
+        last_count=count
+        time.sleep(2)
+
 def prepare(directory,rate,seconds):
     data=users(directory)
     boards=rows("""SELECT b.id FROM board b JOIN users u ON u.id=b.user_id
@@ -26,10 +48,11 @@ def prepare(directory,rate,seconds):
 def stage(out,prepared,rate,seconds):
     out,prepared=out.resolve(),prepared.resolve()
     out.mkdir(parents=True)
-    manifest=prepare(prepared,rate,seconds);write_json(out/'stage.json',manifest)
-    metrics=Metrics(manifest['readers'][0]['token'],out)
+    metrics=Metrics(None,out)
     try:
-        metrics.start();before=metrics.snapshot();write_json(out/'cache-before.json',before);pg_reset()
+        metrics.start();wait_for_idle(metrics,out)
+        manifest=prepare(prepared,rate,seconds);write_json(out/'stage.json',manifest)
+        before=metrics.snapshot();write_json(out/'cache-before.json',before);pg_reset()
         env=dict(os.environ,RATE=str(rate),AWS_SECONDS=str(seconds),AWS_STAGE_FILE=str(out/'stage.json'),K6_NO_USAGE_REPORT='true')
         with open(out/'k6.log','w') as log:
             p=subprocess.run([os.environ.get('K6_BIN','k6'),'run','--quiet','--log-format','json','--no-usage-report','--summary-trend-stats','avg,med,p(95),p(99),count','--summary-export',str(out/'summary.json'),str(ROOT/'load-test/scenarios/aws-like-toggle.js')],env=env,stdout=log,stderr=subprocess.STDOUT)
@@ -53,7 +76,7 @@ def stage(out,prepared,rate,seconds):
     print(json.dumps(result,ensure_ascii=False),flush=True);return result
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--output',required=True);p.add_argument('--prepared-directory',required=True);p.add_argument('--seconds',type=int,default=120);p.add_argument('--warmup-seconds',type=int,default=30);p.add_argument('--repeats',type=int,default=2);p.add_argument('rates',nargs='*',type=int,default=[5,10,20,30,40,60,80,120,160,240,320,480,640]);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--output',required=True);p.add_argument('--prepared-directory',required=True);p.add_argument('--seconds',type=int,default=120);p.add_argument('--warmup-seconds',type=int,default=30);p.add_argument('--repeats',type=int,default=2);p.add_argument('rates',nargs='*',type=int,default=[5,10,20,30,40,60,80,120]);a=p.parse_args()
     if os.environ.get('RESOURCE_MODE')!='aws':p.error('RESOURCE_MODE=aws 필요')
     out=Path(a.output);out.mkdir(parents=True,exist_ok=False);prepared=Path(a.prepared_directory);prepared.mkdir(parents=True,exist_ok=True)
     write_json(out/'config.json',vars(a));results=[]
