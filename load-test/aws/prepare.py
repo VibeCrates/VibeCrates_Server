@@ -39,7 +39,7 @@ def users(directory):
     return data
 
 
-def prepare(directory, rate, seconds, skip_ai=False):
+def prepare(directory, rate, seconds, skip_ai=False, only=None):
     from planner import Resources, create_source, content_sample, identity
     directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=True)
@@ -47,12 +47,12 @@ def prepare(directory, rate, seconds, skip_ai=False):
     resources = Resources(directory, data)
     actors = data['actors']
     actor_by_id = {u['id']: u for u in actors}
-    expected = counts(rate, seconds, skip_ai)
-    sizes = {name: n + 1 for name, n in expected.items()}
+    expected = counts(rate, seconds, skip_ai) if only is None else {only: __import__('math').ceil(rate*seconds)}
+    sizes = {name: (expected.get(name,0)+1 if name in expected else 0) for name in counts(1,1)}
     resources.preflight([sizes], directory / 'stage-budget.json')
     tasks = {}
     for name in ('home', 'archive', 'search_results', 'content_detail', 'content_search', 'capture'):
-        if name in sizes:
+        if sizes[name]:
             tasks[name] = [{'user': data['screens' if name in ('home', 'archive', 'search_results') else 'actors'][i % 600]}
                            for i in range(sizes[name])]
     if 'search_results' in tasks:
@@ -79,7 +79,7 @@ def prepare(directory, rate, seconds, skip_ai=False):
             raise RuntimeError('저장 보드의 중복 없는 좋아요 쌍 부족')
 
     for name, category in [('recommend_like', 'recommend'), ('search_like', 'search')]:
-        if name not in sizes:
+        if not sizes[name]:
             continue
         tasks[name] = []
         for i in range(sizes[name]):
@@ -140,19 +140,20 @@ def prepare(directory, rate, seconds, skip_ai=False):
     # 단일 인기 보드에 몰리지 않도록 256개를 준비 때 상세 조회하고 단계 사이에도 순회를 잇는다.
     capture_file = directory / 'capture-boards.json'
     capture_boards = json.loads(capture_file.read_text()) if capture_file.exists() else None
-    if capture_boards is None:
+    if capture_boards is None and sizes['capture']:
         with ThreadPoolExecutor(max_workers=4) as pool:
             capture_boards = list(pool.map(resources.detail, [b['id'] for b in resources.public[:256]]))
         write_json(capture_file, capture_boards)
     position_file = directory / 'read-cursors.json'
     position = json.loads(position_file.read_text()) if position_file.exists() else {'capture': 0, 'content_detail': 0}
-    for i, t in enumerate(tasks['capture']):
+    for i, t in enumerate(tasks.get('capture', [])):
         t['board'] = capture_boards[(position['capture']+i) % len(capture_boards)]
-    for i, t in enumerate(tasks['content_detail']):
+    for i, t in enumerate(tasks.get('content_detail', [])):
         t['content'] = contents[(position['content_detail']+i) % len(contents)]
     for name in position:
         position[name] += sizes[name]
     write_json(position_file, position)
+    tasks = {name:value for name,value in tasks.items() if name in expected}
     manifest = {'rate': rate, 'seconds': seconds, 'skip_ai': skip_ai, 'tasks': tasks, 'expected': expected,
                 'screens': data['screens'], 'contents': contents, 'run': f'{time.time_ns():x}'}
     resources.persist()

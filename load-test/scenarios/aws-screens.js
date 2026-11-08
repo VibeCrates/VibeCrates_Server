@@ -12,7 +12,8 @@ import * as api from '../lib/api.js';
 import { apiDuration, apiFailed } from '../lib/metrics.js';
 import { KEYWORDS } from '../lib/keywords.js';
 
-const shares = JSON.parse(open('../aws/shares.json'));
+const apiOnly = __ENV.AWS_API_ONLY || '';
+const shares = apiOnly ? { [apiOnly]: 1 } : JSON.parse(open('../aws/shares.json'));
 if (__ENV.SKIP_AI === '1') { delete shares.search_results; delete shares.search_like; }
 const tasks = Object.fromEntries(Object.keys(shares).map((name) => [name,
   new SharedArray(`aws-${name}`, () => JSON.parse(open(__ENV.AWS_STAGE_FILE)).tasks[name]),
@@ -32,11 +33,11 @@ const controlDuration = new Trend('cache_control_duration', true);
 const forcedMiss = new Rate('home_forced_miss');
 const errors = new Counter('workload_errors');
 
-const screenNames = ['home', 'search_results', 'archive', 'onboarding'];
-const names = ['onboarding_status', 'recommend', 'popular', 'my_boards', 'archive',
+const screenNames = apiOnly ? [] : ['home', 'search_results', 'archive', 'onboarding'];
+const names = apiOnly ? [{home:'recommend', search_results:'search_board', mine:'my_boards'}[apiOnly] || apiOnly] : ['onboarding_status', 'recommend', 'popular', 'my_boards', 'archive',
   'onboarding_BOOK', 'onboarding_MOVIE', 'onboarding_MUSIC', 'initial_contents',
   ...Object.keys(shares).filter((n) => !screenNames.includes(n))];
-if (shares.search_results) names.push('search_board');
+if (!apiOnly && shares.search_results) names.push('search_board');
 const thresholds = { api_failed: ['rate<0.01'], workload_errors: ['count==0'] };
 thresholds['aws_completed_on_time{kind:screen}'] = ['count>=0'];
 thresholds.aws_api_completed_on_time = ['count>=0'];
@@ -73,7 +74,7 @@ function problem(message) {
 }
 function task() {
   const name = exec.scenario.name;
-  if (name === 'home' && exec.scenario.iterationInTest === 0) {
+  if ((apiOnly || name === 'home') && exec.scenario.iterationInTest === 0) {
     console.log(`AWS_STAGE_START ${exec.scenario.startTime}`);
   }
   const value = tasks[name][exec.scenario.iterationInTest];
@@ -123,8 +124,10 @@ export async function home() {
   let acquired = false;
   let controlMillis = 0;
   try {
-    const ready = http.get(`${api.BASE}/api/users/me/onboarding`, params(user.token, 'onboarding_status'));
-    if (!record(ready, 'onboarding_status', (d) => d.initialContentsSelected === true)) return;
+    if (!apiOnly) {
+      const ready = http.get(`${api.BASE}/api/users/me/onboarding`, params(user.token, 'onboarding_status'));
+      if (!record(ready, 'onboarding_status', (d) => d.initialContentsSelected === true)) return;
+    }
     // 준비 상태 조회는 캐시에 관여하지 않는다. 같은 사용자의 추천 구간만 직렬화한다.
     const controlStart = Date.now();
     try {
@@ -146,12 +149,16 @@ export async function home() {
       controlMillis = Date.now() - controlStart;
       controlDuration.add(controlMillis);
     }
+    if (apiOnly) {
+      const res = http.get(`${api.BASE}/api/boards/recommendation/user`, params(user.token, 'recommend'));
+      record(res, 'recommend'); return;
+    }
     const requests = api.homeRequests(user.token);
     for (const request of Object.values(requests)) request.params.timeout = '25s';
     const results = http.batch(requests);
     for (const [name, res] of Object.entries(results)) record(res, name);
   } finally {
-    screenDuration.add(Date.now() - screenStart - controlMillis, { screen: 'home' });
+    if (!apiOnly) screenDuration.add(Date.now() - screenStart - controlMillis, { screen: 'home' });
     done();
     if (acquired) {
       try { await client.del(lock); }
@@ -270,4 +277,18 @@ export function capture() {
 }
 export function delete_board() {
   const t = task(); send('DELETE', `/api/boards/${t.board.boardId}`, t.user, null, 'delete_board'); done();
+}
+
+// 개별 API는 진입 상태·탭별 검색 없이 요청 하나만 보낸다.
+export function popular() {
+  const {user} = task();
+  send('GET', '/api/boards/liked?n=8', user, null, 'popular'); done();
+}
+export function mine() {
+  const {user} = task();
+  send('GET', '/api/boards/mine?filter=ALL&page=0&size=20', user, null, 'my_boards'); done();
+}
+export function initial_contents() {
+  const {user, selected} = task();
+  send('POST', '/api/users/me/initial-contents', user, {contentIds:selected}, 'initial_contents'); done();
 }
