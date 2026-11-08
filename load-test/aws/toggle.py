@@ -23,6 +23,7 @@ def prepare(directory,rate,seconds):
     return {'actors':actors,'readers':data['screens']}
 
 def stage(out,prepared,rate,seconds):
+    out,prepared=out.resolve(),prepared.resolve()
     out.mkdir(parents=True)
     manifest=prepare(prepared,rate,seconds);write_json(out/'stage.json',manifest)
     metrics=Metrics(manifest['readers'][0]['token'],out)
