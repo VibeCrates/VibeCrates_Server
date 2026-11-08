@@ -87,6 +87,11 @@ def stage(out,prepared,name,rate,seconds,cache_mode='on',settle_before=True,sett
     write_json(out/'stage.json',manifest)
     service_before=wait_for_healthy(out)
     write_json(out/'ecs-before.json',service_before)
+    ready=prepared/'home-cache-ready.json'
+    if name=='home' and cache_mode=='on' and not ready.exists():
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(lambda u:request('/api/boards/recommendation/user',u['token']),manifest['screens']))
+        write_json(ready,{'prewarmed_users':len(manifest['screens']),'at':time.time()})
     metrics,before=start_stage_metrics(out,settle_before)
     changed=False;censored=False
     try:
