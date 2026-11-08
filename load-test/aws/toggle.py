@@ -176,8 +176,13 @@ def main():
     out=Path(a.output);out.mkdir(parents=True,exist_ok=False);prepared=Path(a.prepared_directory);prepared.mkdir(parents=True,exist_ok=True)
     write_json(out/'config.json',vars(a));results=[]
     def measure(rate,label):
-        stage(out/(label+'-warmup'),prepared,rate,a.warmup_seconds,settle_after=False)
-        r=stage(out/label,prepared,rate,a.seconds,settle_before=False);results.append(r);write_json(out/'results.json',results);return r
+        warmup=stage(out/(label+'-warmup'),prepared,rate,a.warmup_seconds,settle_after=False)
+        r=stage(out/label,prepared,rate,a.seconds,settle_before=False)
+        r['warmup_task_changed']=warmup.get('ecs_task_changed',False)
+        if r['warmup_task_changed']:
+            r['saturated']=True
+            write_json(out/label/'result.json',r)
+        results.append(r);write_json(out/'results.json',results);return r
     prev=max(1,a.rates[0]//2)
     for n,rate in enumerate(itertools.chain(a.rates, (a.rates[-1]*2**power for power in itertools.count(1))),1):
         r=measure(rate,f'step-{n}-rate-{rate}')

@@ -367,6 +367,17 @@ class ToggleFixtureTest(unittest.TestCase):
         self.assertEqual(stage.call_args_list[0].kwargs,{'settle_after':False})
         self.assertEqual(stage.call_args_list[1].kwargs,{'settle_before':False})
 
+    def test_toggle_warmup_replacement_marks_the_load_step_saturated(self):
+        from toggle import main
+        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', {'RESOURCE_MODE': 'aws'}), \
+                patch('sys.argv', ['toggle.py', '--output', str(Path(tmp)/'out'),
+                    '--prepared-directory', str(Path(tmp)/'prepared'), '--repeats', '0', '5']), \
+                patch('toggle.stage', side_effect=[{'ecs_task_changed': True}, {'saturated': False}]):
+            main()
+            result = json.loads((Path(tmp)/'out/results.json').read_text())[0]
+            self.assertTrue(result['saturated'])
+            self.assertTrue(result['warmup_task_changed'])
+
     def test_toggle_rebinds_metrics_when_tasks_change_before_load(self):
         from unittest.mock import Mock
         from toggle import start_stage_metrics
