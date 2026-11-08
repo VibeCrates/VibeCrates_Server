@@ -35,6 +35,21 @@ class ApiTest(unittest.TestCase):
             a=prepare(Path(d),'initial_contents',1,2)
             b=prepare(Path(d),'initial_contents',1,2)
             self.assertTrue({t['user']['id'] for t in a['tasks']['initial_contents']}.isdisjoint({t['user']['id'] for t in b['tasks']['initial_contents']}))
+    def test_write_manifest_contains_only_requested_api_at_unscaled_rate(self):
+        from prepare import prepare as screen_prepare
+        from unittest.mock import Mock
+        data={'screens':[{'id':1001}], 'actors':[{'id':i} for i in range(600)]}
+        resources=Mock(public=[{'id':i} for i in range(200)], owned=[], liked=set(),
+                       reserved=set(), unlikes=[], catalog={'recommend':[],'search':[]})
+        with tempfile.TemporaryDirectory() as d,patch('prepare.users',return_value=data),patch('prepare.rows',return_value=[]),patch('planner.Resources',return_value=resources),patch('planner.content_sample',return_value=[]):
+            m=screen_prepare(Path(d),10,2,only='stored_like')
+        self.assertEqual(set(m['tasks']),{'stored_like'})
+        self.assertEqual(m['expected'],{'stored_like':20})
+        self.assertEqual(len(m['tasks']['stored_like']),21)
+        sizes=resources.preflight.call_args.args[0][0]
+        self.assertEqual(sizes['stored_like'],21)
+        self.assertEqual(sum(sizes.values()),21)
+
     def test_single_write_uses_screen_reservations_with_full_api_rate(self):
         with tempfile.TemporaryDirectory() as d,patch('api_sweep.screen_prepare',return_value={}) as fn:
             prepare(Path(d),'save_board',80,60)
