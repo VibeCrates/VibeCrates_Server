@@ -281,5 +281,28 @@ class ToolsTest(unittest.TestCase):
                             unlikes(log,manifest,0,path/'report.json')
 
 
+class ToggleFixtureTest(unittest.TestCase):
+    def fixture(self):
+        from toggle import prepare
+        data = {'actors': [{'id': i, 'token': 'fixture'} for i in range(1, 601)],
+                'screens': [{'id': 1001, 'token': 'fixture'}]}
+        boards = [{'id': i} for i in range(1, 1001)]
+        liked = [{'user_id': 1, 'board_id': 1}, {'user_id': 1, 'board_id': 2}]
+        with patch('toggle.users', return_value=data), patch('toggle.rows', side_effect=[boards, liked]):
+            return prepare(Path('/fixture'), 30, 120)
+
+    def test_toggle_does_not_concentrate_concurrent_writes_on_one_board(self):
+        actors = self.fixture()['actors']
+        self.assertGreater(len({u['boards'][0] for u in actors}), 300)
+
+    def test_toggle_never_reuses_a_pair_or_cancels_an_existing_like(self):
+        actors = self.fixture()['actors']
+        self.assertTrue(all(len(u['boards']) == len(set(u['boards'])) == 8 for u in actors))
+        self.assertTrue(set(actors[0]['boards']).isdisjoint({1, 2}))
+
+    def test_toggle_assignment_repeats_for_the_same_restored_database(self):
+        self.assertEqual(self.fixture(), self.fixture())
+
+
 if __name__ == '__main__':
     unittest.main()

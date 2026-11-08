@@ -1,5 +1,5 @@
 """AWS 좋아요→취소 스윕. 서버 포화까지 올리고 주변 세 지점을 두 번 반복한다."""
-import argparse,itertools,json,math,os,subprocess,time
+import argparse,itertools,json,math,os,random,subprocess,time
 from pathlib import Path
 from common import ROOT,rows,write_json
 from prepare import users
@@ -17,8 +17,9 @@ def prepare(directory,rate,seconds):
     needed=math.ceil(rate*seconds/600)+2
     actors=[]
     for user in data['actors']:
-        allowed=[b['id'] for b in boards if (user['id'],b['id']) not in existing][:needed]
-        if len(allowed)<needed: raise RuntimeError('안정적인 보드의 좋아요 쌍 부족')
+        eligible=[b['id'] for b in boards if (user['id'],b['id']) not in existing]
+        if len(eligible)<needed: raise RuntimeError('안정적인 보드의 좋아요 쌍 부족')
+        allowed=random.Random(20261108+user['id']).sample(eligible,needed)
         actors.append({**user,'boards':allowed})
     return {'actors':actors,'readers':data['screens']}
 
