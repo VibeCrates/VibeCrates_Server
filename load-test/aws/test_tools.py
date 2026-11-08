@@ -305,12 +305,12 @@ class ToggleFixtureTest(unittest.TestCase):
         self.assertTrue(result['settled'])
         self.assertGreaterEqual(result['wait_seconds'],18)
 
-    def test_toggle_rejects_a_backlog_after_the_wait_limit(self):
+    def test_toggle_records_a_backlog_after_the_wait_limit(self):
         from toggle import wait_for_idle
         from unittest.mock import Mock
         metrics=Mock(snapshot=lambda:{'task':{'hikaricp_connections_active':1}})
         with tempfile.TemporaryDirectory() as tmp, patch('toggle.time.monotonic',side_effect=[0,0,300]), patch('toggle.time.sleep'):
-            with self.assertRaises(RuntimeError):wait_for_idle(metrics,Path(tmp))
+            self.assertFalse(wait_for_idle(metrics,Path(tmp)))
             result=json.loads((Path(tmp)/'settle.json').read_text())
         self.assertFalse(result['settled'])
 

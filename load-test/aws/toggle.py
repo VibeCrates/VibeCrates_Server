@@ -23,8 +23,8 @@ def wait_for_idle(metrics,out,timeout=300,filename='settle.json'):
         settled=quiet_since is not None and now-quiet_since>=10
         write_json(out/filename,{'wait_seconds':now-started,'settled':settled,'samples':samples,
           'method':'Hikari active/pending and recalculation pending zero, completion counter stable for 10 seconds'})
-        if settled:return
-        if now>=deadline:raise RuntimeError('이전 단계 재계산이 5분 안에 가라앉지 않았습니다')
+        if settled:return True
+        if now>=deadline:return False
         last_count=count
         time.sleep(2)
 
@@ -60,8 +60,10 @@ def stage(out,prepared,rate,seconds,settle_before=True,settle_after=True):
             p=subprocess.run([os.environ.get('K6_BIN','k6'),'run','--quiet','--log-format','json','--no-usage-report','--summary-trend-stats','avg,med,p(95),p(99),count','--summary-export',str(out/'summary.json'),str(ROOT/'load-test/scenarios/aws-like-toggle.js')],env=env,stdout=log,stderr=subprocess.STDOUT)
         after=metrics.snapshot();write_json(out/'cache-after.json',after)
         if settle_after:
-            wait_for_idle(metrics,out,filename='post-settle.json')
-            write_json(out/'cache-after-idle.json',metrics.snapshot())
+            settled=wait_for_idle(metrics,out,filename='post-settle.json')
+            snapshot=metrics.snapshot()
+            write_json(out/'cache-after-settle.json',snapshot)
+            if settled:write_json(out/'cache-after-idle.json',snapshot)
     finally: metrics.close()
     if p.returncode not in (0,99): raise RuntimeError('k6 쌍 실행 오류')
     start=measurement_start(out/'k6.log')
