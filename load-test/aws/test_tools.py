@@ -282,6 +282,28 @@ class ToolsTest(unittest.TestCase):
 
 
 class ToggleFixtureTest(unittest.TestCase):
+    def test_toggle_records_task_replacement_without_discarding_http_saturation(self):
+        from toggle import stage
+        from unittest.mock import Mock
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            out=Path(tmp)/'stage'
+            metrics=Mock(targets=['old-task'])
+            metrics.start.side_effect=lambda:(out/'ecs-task-0.promlog').write_text('sample')
+            metrics.snapshot.side_effect=[{'old-task':{'counter':1}},RuntimeError('단계 중 ECS 작업 목록이 바뀌었습니다 — 측정 무효')]
+            summary={'metrics':{'toggle_completed_on_time':{'count':80},'toggle_success_on_time':{'count':80},'dropped_iterations':{'count':1}}}
+            for name in ('like','unlike','read'):
+                summary['metrics'][f'toggle_duration{{name:{name}}}']={'count':100,'p(95)':1000}
+                summary['metrics'][f'toggle_failed{{name:{name}}}']={'value':0}
+            def execute(*args,**kwargs):
+                (out/'summary.json').write_text(json.dumps(summary))
+                return SimpleNamespace(returncode=99)
+            with patch('toggle.Metrics',return_value=metrics),patch('toggle.wait_for_idle',return_value=True),patch('toggle.prepare',return_value={}),patch('toggle.pg_reset'),patch('toggle.pg_snapshot'),patch('toggle.cloudwatch'),patch('toggle.subprocess.run',side_effect=execute),patch('toggle.measurement_start',return_value=100),patch('toggle.latest_sample',return_value=(220,{'counter':3})),patch('toggle.ecs_targets',return_value=['new-task']),patch('toggle.request',return_value={}):
+                result=stage(out,Path(tmp),1,120)
+            self.assertTrue(result['saturated'])
+            self.assertTrue(result['ecs_task_changed'])
+            self.assertTrue(json.loads((out/'task-change.json').read_text())['counters_right_censored'])
+
     def test_toggle_preserves_warmup_load_until_the_measurement(self):
         from toggle import main
         with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ',{'RESOURCE_MODE':'aws'}), patch('sys.argv',[
