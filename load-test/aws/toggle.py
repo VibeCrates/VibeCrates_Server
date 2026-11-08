@@ -45,20 +45,23 @@ def prepare(directory,rate,seconds):
         actors.append({**user,'boards':allowed})
     return {'actors':actors,'readers':data['screens']}
 
-def stage(out,prepared,rate,seconds):
+def stage(out,prepared,rate,seconds,settle_before=True,settle_after=True):
     out,prepared=out.resolve(),prepared.resolve()
     out.mkdir(parents=True)
     metrics=Metrics(None,out)
     try:
-        metrics.start();wait_for_idle(metrics,out)
+        metrics.start()
+        if settle_before:wait_for_idle(metrics,out)
+        else:write_json(out/'settle.json',{'continued_from_warmup':True})
         manifest=prepare(prepared,rate,seconds);write_json(out/'stage.json',manifest)
         before=metrics.snapshot();write_json(out/'cache-before.json',before);pg_reset()
         env=dict(os.environ,RATE=str(rate),AWS_SECONDS=str(seconds),AWS_STAGE_FILE=str(out/'stage.json'),K6_NO_USAGE_REPORT='true')
         with open(out/'k6.log','w') as log:
             p=subprocess.run([os.environ.get('K6_BIN','k6'),'run','--quiet','--log-format','json','--no-usage-report','--summary-trend-stats','avg,med,p(95),p(99),count','--summary-export',str(out/'summary.json'),str(ROOT/'load-test/scenarios/aws-like-toggle.js')],env=env,stdout=log,stderr=subprocess.STDOUT)
         after=metrics.snapshot();write_json(out/'cache-after.json',after)
-        wait_for_idle(metrics,out,filename='post-settle.json')
-        write_json(out/'cache-after-idle.json',metrics.snapshot())
+        if settle_after:
+            wait_for_idle(metrics,out,filename='post-settle.json')
+            write_json(out/'cache-after-idle.json',metrics.snapshot())
     finally: metrics.close()
     if p.returncode not in (0,99): raise RuntimeError('k6 쌍 실행 오류')
     start=measurement_start(out/'k6.log')
@@ -83,8 +86,8 @@ def main():
     out=Path(a.output);out.mkdir(parents=True,exist_ok=False);prepared=Path(a.prepared_directory);prepared.mkdir(parents=True,exist_ok=True)
     write_json(out/'config.json',vars(a));results=[]
     def measure(rate,label):
-        stage(out/(label+'-warmup'),prepared,rate,a.warmup_seconds)
-        r=stage(out/label,prepared,rate,a.seconds);results.append(r);write_json(out/'results.json',results);return r
+        stage(out/(label+'-warmup'),prepared,rate,a.warmup_seconds,settle_after=False)
+        r=stage(out/label,prepared,rate,a.seconds,settle_before=False);results.append(r);write_json(out/'results.json',results);return r
     prev=max(1,a.rates[0]//2)
     for n,rate in enumerate(itertools.chain(a.rates, (a.rates[-1]*2**power for power in itertools.count(1))),1):
         r=measure(rate,f'step-{n}-rate-{rate}')

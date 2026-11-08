@@ -282,6 +282,14 @@ class ToolsTest(unittest.TestCase):
 
 
 class ToggleFixtureTest(unittest.TestCase):
+    def test_toggle_preserves_warmup_load_until_the_measurement(self):
+        from toggle import main
+        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ',{'RESOURCE_MODE':'aws'}), patch('sys.argv',[
+                'toggle.py','--output',str(Path(tmp)/'out'),'--prepared-directory',str(Path(tmp)/'prepared'),'--repeats','0','5']), patch('toggle.stage',return_value={'saturated':True}) as stage:
+            main()
+        self.assertEqual(stage.call_args_list[0].kwargs,{'settle_after':False})
+        self.assertEqual(stage.call_args_list[1].kwargs,{'settle_before':False})
+
     def test_toggle_waits_for_active_and_queued_recalculations(self):
         from toggle import wait_for_idle
         from unittest.mock import Mock
