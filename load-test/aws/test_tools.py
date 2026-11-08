@@ -326,6 +326,40 @@ class ToggleFixtureTest(unittest.TestCase):
         self.assertEqual(stage.call_args_list[0].kwargs,{'settle_after':False})
         self.assertEqual(stage.call_args_list[1].kwargs,{'settle_before':False})
 
+    def test_toggle_rebinds_metrics_when_tasks_change_before_load(self):
+        from unittest.mock import Mock
+        from toggle import start_stage_metrics
+        old=Mock(snapshot=Mock(side_effect=RuntimeError('단계 중 ECS 작업 목록이 바뀌었습니다 — 측정 무효')))
+        new=Mock(snapshot=Mock(return_value={'new-task':{'counter':3}}))
+        with tempfile.TemporaryDirectory() as tmp, patch('toggle.Metrics',side_effect=[old,new]), patch('toggle.wait_for_idle') as wait, patch('toggle.time.sleep'):
+            metrics,snapshot=start_stage_metrics(Path(tmp),True)
+            transitions=json.loads((Path(tmp)/'pre-stage-transitions.json').read_text())
+        self.assertIs(metrics,new)
+        self.assertEqual(snapshot,{'new-task':{'counter':3}})
+        old.close.assert_called_once()
+        new.close.assert_not_called()
+        self.assertEqual(wait.call_count,2)
+        self.assertEqual(len(transitions['transitions']),1)
+
+    def test_toggle_preload_rebinding_keeps_the_wait_limit(self):
+        from unittest.mock import Mock
+        from toggle import start_stage_metrics
+        metrics=Mock(snapshot=Mock(side_effect=RuntimeError('ECS Exec 새 지표 샘플 시간초과')))
+        with tempfile.TemporaryDirectory() as tmp, patch('toggle.Metrics',return_value=metrics), patch('toggle.wait_for_idle'), patch('toggle.time.monotonic',side_effect=[0,0,300,300]), patch('toggle.time.sleep') as sleep:
+            with self.assertRaisesRegex(RuntimeError,'새 지표 샘플 시간초과'):
+                start_stage_metrics(Path(tmp),True)
+        metrics.close.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_toggle_preload_rebinding_propagates_other_errors(self):
+        from unittest.mock import Mock
+        from toggle import start_stage_metrics
+        metrics=Mock(snapshot=Mock(side_effect=RuntimeError('AWS 수집 명령 실패')))
+        with tempfile.TemporaryDirectory() as tmp, patch('toggle.Metrics',return_value=metrics), patch('toggle.wait_for_idle'):
+            with self.assertRaisesRegex(RuntimeError,'AWS 수집 명령 실패'):
+                start_stage_metrics(Path(tmp),True)
+        metrics.close.assert_called_once()
+
     def test_toggle_waits_for_active_and_queued_recalculations(self):
         from toggle import wait_for_idle
         from unittest.mock import Mock

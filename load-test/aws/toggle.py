@@ -6,6 +6,9 @@ from prepare import users
 from collect import Metrics,cloudwatch,pg_reset,pg_snapshot,latest_sample,ecs_targets
 from sweep import measurement_start
 
+METRICS_TRANSITION_ERRORS=('단계 중 ECS 작업 목록이 바뀌었습니다 — 측정 무효','수집할 ECS 작업이 없습니다',
+    'ECS Exec 연속 수집기가 종료됐습니다','ECS Exec 새 지표 샘플 시간초과')
+
 def wait_for_idle(metrics,out,timeout=300,filename='settle.json'):
     started=time.monotonic();deadline=started+timeout;samples=[];quiet_since=None;last_count=None
     while True:
@@ -46,9 +49,7 @@ def prepare(directory,rate,seconds):
     return {'actors':actors,'readers':data['screens']}
 
 def record_metrics_gap(metrics,out,error,counters_right_censored):
-    expected=('단계 중 ECS 작업 목록이 바뀌었습니다 — 측정 무효','수집할 ECS 작업이 없습니다',
-        'ECS Exec 연속 수집기가 종료됐습니다','ECS Exec 새 지표 샘플 시간초과')
-    if str(error) not in expected:raise error
+    if str(error) not in METRICS_TRANSITION_ERRORS:raise error
     snapshot={};last_times={}
     for index,target in enumerate(metrics.targets):
         sample=latest_sample((out/f'ecs-task-{index}.promlog').read_text())
@@ -75,16 +76,34 @@ def record_metrics_gap(metrics,out,error,counters_right_censored):
             if time.monotonic()-started>=300:raise
             time.sleep(5)
 
+def start_stage_metrics(out,settle_before):
+    started=time.monotonic();deadline=started+300
+    transitions=[]
+    while True:
+        metrics=None
+        try:
+            metrics=Metrics(None,out)
+            metrics.start()
+            if settle_before:wait_for_idle(metrics,out,timeout=max(0,deadline-time.monotonic()))
+            else:write_json(out/'settle.json',{'continued_from_warmup':True})
+            snapshot=metrics.snapshot()
+            if transitions:write_json(out/'pre-stage-transitions.json',{'wait_seconds':time.monotonic()-started,'transitions':transitions})
+            return metrics,snapshot
+        except Exception as error:
+            if metrics is not None:metrics.close()
+            if str(error) not in METRICS_TRANSITION_ERRORS:raise
+            transitions.append({'at':time.time(),'cause':str(error)})
+            write_json(out/'pre-stage-transitions.json',{'wait_seconds':time.monotonic()-started,'transitions':transitions})
+            if time.monotonic()>=deadline:raise
+            time.sleep(2)
+
 def stage(out,prepared,rate,seconds,settle_before=True,settle_after=True):
     out,prepared=out.resolve(),prepared.resolve()
     out.mkdir(parents=True)
-    metrics=Metrics(None,out)
+    metrics,before=start_stage_metrics(out,settle_before)
     try:
-        metrics.start()
-        if settle_before:wait_for_idle(metrics,out)
-        else:write_json(out/'settle.json',{'continued_from_warmup':True})
         manifest=prepare(prepared,rate,seconds);write_json(out/'stage.json',manifest)
-        before=metrics.snapshot();write_json(out/'cache-before.json',before);pg_reset()
+        write_json(out/'cache-before.json',before);pg_reset()
         env=dict(os.environ,RATE=str(rate),AWS_SECONDS=str(seconds),AWS_STAGE_FILE=str(out/'stage.json'),K6_NO_USAGE_REPORT='true')
         with open(out/'k6.log','w') as log:
             p=subprocess.run([os.environ.get('K6_BIN','k6'),'run','--quiet','--log-format','json','--no-usage-report','--summary-trend-stats','avg,med,p(95),p(99),count','--summary-export',str(out/'summary.json'),str(ROOT/'load-test/scenarios/aws-like-toggle.js')],env=env,stdout=log,stderr=subprocess.STDOUT)
