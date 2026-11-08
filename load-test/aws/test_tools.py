@@ -305,18 +305,59 @@ class ToggleFixtureTest(unittest.TestCase):
             metrics=Mock(targets=['old-task'])
             metrics.start.side_effect=lambda:(out/'ecs-task-0.promlog').write_text('sample')
             metrics.snapshot.side_effect=[{'old-task':{'counter':1}},RuntimeError('단계 중 ECS 작업 목록이 바뀌었습니다 — 측정 무효')]
-            summary={'metrics':{'toggle_completed_on_time':{'count':80},'toggle_success_on_time':{'count':80},'dropped_iterations':{'count':1}}}
+            summary={'metrics':{'toggle_completed_on_time':{'count':120},'toggle_success_on_time':{'count':120},'dropped_iterations':{'count':0}}}
             for name in ('like','unlike','read'):
                 summary['metrics'][f'toggle_duration{{name:{name}}}']={'count':100,'p(95)':1000}
                 summary['metrics'][f'toggle_failed{{name:{name}}}']={'value':0}
             def execute(*args,**kwargs):
                 (out/'summary.json').write_text(json.dumps(summary))
                 return SimpleNamespace(returncode=99)
-            with patch('toggle.Metrics',return_value=metrics),patch('toggle.wait_for_idle',return_value=True),patch('toggle.prepare',return_value={}),patch('toggle.pg_reset'),patch('toggle.pg_snapshot'),patch('toggle.cloudwatch'),patch('toggle.subprocess.run',side_effect=execute),patch('toggle.measurement_start',return_value=100),patch('toggle.latest_sample',return_value=(220,{'counter':3})),patch('toggle.ecs_targets',return_value=['new-task']),patch('toggle.request',return_value={}):
+            with patch('toggle.wait_for_healthy',return_value={'events':[]}),patch('toggle.service_state',return_value={'events':[]}),patch('toggle.Metrics',return_value=metrics),patch('toggle.wait_for_idle',return_value=True),patch('toggle.prepare',return_value={}),patch('toggle.pg_reset'),patch('toggle.pg_snapshot'),patch('toggle.cloudwatch'),patch('toggle.subprocess.run',side_effect=execute),patch('toggle.measurement_start',return_value=100),patch('toggle.latest_sample',return_value=(220,{'counter':3})),patch('toggle.ecs_targets',return_value=['new-task']),patch('toggle.request',return_value={}):
                 result=stage(out,Path(tmp),1,120)
             self.assertTrue(result['saturated'])
             self.assertTrue(result['ecs_task_changed'])
             self.assertTrue(json.loads((out/'task-change.json').read_text())['counters_right_censored'])
+
+    def test_toggle_health_failure_during_drain_is_saturation_with_complete_counters(self):
+        from toggle import stage
+        from unittest.mock import Mock
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / 'stage'
+            metrics = Mock(snapshot=Mock(return_value={'old-task': {'counter': 3}}))
+            summary = {'metrics': {'toggle_completed_on_time': {'count': 120}}}
+            for name in ('like', 'unlike', 'read'):
+                summary['metrics'][f'toggle_duration{{name:{name}}}'] = {'count': 100, 'p(95)': 100}
+                summary['metrics'][f'toggle_failed{{name:{name}}}'] = {'value': 0}
+            def execute(*args, **kwargs):
+                (out / 'summary.json').write_text(json.dumps(summary))
+                return SimpleNamespace(returncode=0)
+            event = {'id': 'replacement', 'message': 'Amazon ECS replaced 1 tasks due to an unhealthy status.'}
+            with patch('toggle.wait_for_healthy', return_value={'events': []}), \
+                    patch('toggle.service_state', return_value={'events': [event]}), \
+                    patch('toggle.Metrics', return_value=metrics), \
+                    patch('toggle.wait_for_idle', return_value=True), \
+                    patch('toggle.prepare', return_value={}), patch('toggle.pg_reset'), \
+                    patch('toggle.pg_snapshot'), patch('toggle.cloudwatch'), \
+                    patch('toggle.subprocess.run', side_effect=execute), \
+                    patch('toggle.measurement_start', return_value=100):
+                result = stage(out, Path(tmp), 1, 120)
+            self.assertTrue(result['saturated'])
+            self.assertTrue(result['ecs_task_changed'])
+            self.assertFalse(result['ecs_metrics_censored'])
+            self.assertTrue(result['goal_pass'])
+            self.assertEqual(json.loads((out / 'ecs-replacement-events.json').read_text()), [event])
+
+    def test_toggle_health_recovery_stops_after_ten_minutes(self):
+        from toggle import wait_for_healthy
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch('toggle.service_state', return_value={'pendingCount': 1}), \
+                patch('toggle.aws', return_value=json.dumps({'taskArns': []})), \
+                patch.dict('os.environ', {'ECS_CLUSTER': 'test'}), \
+                patch('toggle.time.monotonic', side_effect=[0, 600, 600]):
+            with self.assertRaisesRegex(RuntimeError, '10분 초과'):
+                wait_for_healthy(Path(tmp))
+            self.assertFalse(json.loads((Path(tmp) / 'task-recovery.json').read_text())['ready'])
 
     def test_toggle_preserves_warmup_load_until_the_measurement(self):
         from toggle import main
@@ -345,7 +386,7 @@ class ToggleFixtureTest(unittest.TestCase):
         from unittest.mock import Mock
         from toggle import start_stage_metrics
         metrics=Mock(snapshot=Mock(side_effect=RuntimeError('ECS Exec 새 지표 샘플 시간초과')))
-        with tempfile.TemporaryDirectory() as tmp, patch('toggle.Metrics',return_value=metrics), patch('toggle.wait_for_idle'), patch('toggle.time.monotonic',side_effect=[0,0,300,300]), patch('toggle.time.sleep') as sleep:
+        with tempfile.TemporaryDirectory() as tmp, patch('toggle.Metrics',return_value=metrics), patch('toggle.wait_for_idle'), patch('toggle.time.monotonic',side_effect=[0,0,600,600]), patch('toggle.time.sleep') as sleep:
             with self.assertRaisesRegex(RuntimeError,'새 지표 샘플 시간초과'):
                 start_stage_metrics(Path(tmp),True)
         metrics.close.assert_called_once()

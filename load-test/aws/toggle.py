@@ -3,7 +3,7 @@ import argparse,itertools,json,math,os,random,subprocess,time
 from pathlib import Path
 from common import ROOT,rows,write_json,request
 from prepare import users
-from collect import Metrics,cloudwatch,pg_reset,pg_snapshot,latest_sample,ecs_targets
+from collect import Metrics,cloudwatch,pg_reset,pg_snapshot,latest_sample,ecs_targets,aws
 from sweep import measurement_start
 
 METRICS_TRANSITION_ERRORS=('단계 중 ECS 작업 목록이 바뀌었습니다 — 측정 무효','수집할 ECS 작업이 없습니다',
@@ -53,8 +53,7 @@ def record_metrics_gap(metrics,out,error,counters_right_censored):
     snapshot={};last_times={}
     for index,target in enumerate(metrics.targets):
         sample=latest_sample((out/f'ecs-task-{index}.promlog').read_text())
-        if sample is None:raise RuntimeError('ECS 작업의 마지막 지표 표본이 없습니다')
-        last_times[target],snapshot[target]=sample
+        if sample is not None:last_times[target],snapshot[target]=sample
     try:current=ecs_targets()
     except RuntimeError as target_error:
         if str(target_error)!='수집할 ECS 작업이 없습니다':raise
@@ -66,25 +65,49 @@ def record_metrics_gap(metrics,out,error,counters_right_censored):
     path=out/'post-settle.json'
     status=json.loads(path.read_text()) if path.exists() else {'wait_seconds':0,'samples':[]}
     write_json(path,{**status,'settled':False,'reason':str(error)})
-    started=time.monotonic()
+    return snapshot,changed
+
+def service_state():
+    response = aws('ecs', 'describe-services', '--cluster', os.environ['ECS_CLUSTER'],
+        '--services', os.environ.get('ECS_SERVICE', 'backend'))
+    return json.loads(response)['services'][0]
+
+def wait_for_healthy(out, timeout=600):
+    started = time.monotonic()
     while True:
-        try:
-            request('/api/auth/login',body={'loginId':'loadtest_u0','pwd':'Loadtest!234'})
-            write_json(out/'task-recovery.json',{'ready':True,'wait_seconds':time.monotonic()-started})
-            return snapshot,changed
-        except RuntimeError:
-            if time.monotonic()-started>=300:raise
-            time.sleep(5)
+        service = service_state()
+        tasks = json.loads(aws('ecs', 'list-tasks', '--cluster', os.environ['ECS_CLUSTER'],
+            '--service-name', os.environ.get('ECS_SERVICE', 'backend')))['taskArns']
+        healthy = False
+        if tasks and service['pendingCount'] == 0 and service['runningCount'] == service['desiredCount']:
+            details = json.loads(aws('ecs', 'describe-tasks', '--cluster',
+                os.environ['ECS_CLUSTER'], '--tasks', *tasks))['tasks']
+            ips = {value['value'] for task in details for attachment in task.get('attachments', [])
+                for value in attachment.get('details', []) if value['name'] == 'privateIPv4Address'}
+            healthy = bool(ips) and all(task['lastStatus'] == 'RUNNING' for task in details)
+            for group in service['loadBalancers']:
+                targets = json.loads(aws('elbv2', 'describe-target-health', '--target-group-arn',
+                    group['targetGroupArn']))['TargetHealthDescriptions']
+                current = [target for target in targets if target['Target']['Id'] in ips]
+                healthy = healthy and len(current) == len(ips) and all(
+                    target['TargetHealth']['State'] == 'healthy' for target in current)
+        write_json(out/'task-recovery.json', {
+            'ready': healthy, 'wait_seconds': time.monotonic()-started, 'tasks': tasks})
+        if healthy:
+            return service
+        if time.monotonic()-started >= timeout:
+            raise RuntimeError('ECS healthy 대기 10분 초과')
+        time.sleep(5)
 
 def start_stage_metrics(out,settle_before):
-    started=time.monotonic();deadline=started+300
+    started=time.monotonic();deadline=started+600
     transitions=[]
     while True:
         metrics=None
         try:
             metrics=Metrics(None,out)
             metrics.start()
-            if settle_before:wait_for_idle(metrics,out,timeout=max(0,deadline-time.monotonic()))
+            if settle_before:wait_for_idle(metrics,out,timeout=300)
             else:write_json(out/'settle.json',{'continued_from_warmup':True})
             snapshot=metrics.snapshot()
             if transitions:write_json(out/'pre-stage-transitions.json',{'wait_seconds':time.monotonic()-started,'transitions':transitions})
@@ -100,6 +123,8 @@ def start_stage_metrics(out,settle_before):
 def stage(out,prepared,rate,seconds,settle_before=True,settle_after=True):
     out,prepared=out.resolve(),prepared.resolve()
     out.mkdir(parents=True)
+    service_before=wait_for_healthy(out)
+    write_json(out/'ecs-before.json',service_before)
     metrics,before=start_stage_metrics(out,settle_before)
     try:
         manifest=prepare(prepared,rate,seconds);write_json(out/'stage.json',manifest)
@@ -121,6 +146,13 @@ def stage(out,prepared,rate,seconds,settle_before=True,settle_after=True):
             except RuntimeError as error:
                 _,changed=record_metrics_gap(metrics,out,error,False)
     finally: metrics.close()
+    service_after=service_state()
+    write_json(out/'ecs-after.json',service_after)
+    previous_ids={event['id'] for event in service_before.get('events',[])}
+    unhealthy=[event for event in service_after.get('events',[]) if event['id'] not in previous_ids
+        and ('unhealthy' in event['message'] or 'replaced' in event['message'])]
+    write_json(out/'ecs-replacement-events.json',unhealthy)
+    changed=changed or bool(unhealthy)
     if p.returncode not in (0,99): raise RuntimeError('k6 쌍 실행 오류')
     start=measurement_start(out/'k6.log')
     if start is None: raise RuntimeError('측정 시작 시각 누락')
@@ -134,7 +166,7 @@ def stage(out,prepared,rate,seconds,settle_before=True,settle_after=True):
     apis={name:{**m.get(f'toggle_duration{{name:{name}}}',{}),'failure_rate':get(f'toggle_failed{{name:{name}}}','value',1)} for name in ('like','unlike','read')}
     if any(x.get('count',0)==0 for x in apis.values()): raise RuntimeError('시나리오 표본 누락')
     failed=max(apis['like']['failure_rate'],apis['unlike']['failure_rate'])
-    result={'label':out.name,'rate':rate,'apis':apis,'failure_rate':failed,'dropped_iterations':drop,'completion_ratio':completion,'actual_pairs_per_second':count/seconds,'successful_pairs_per_second':get('toggle_success_on_time','count')/seconds,'saturated':failed>=.05 or drop>0 or completion<.9,'goal_pass':all(x['failure_rate']<.01 and x['p(95)']<500 for x in apis.values()),'ecs_task_changed':changed,'ecs_metrics_censored':censored}
+    result={'label':out.name,'rate':rate,'apis':apis,'failure_rate':failed,'dropped_iterations':drop,'completion_ratio':completion,'actual_pairs_per_second':count/seconds,'successful_pairs_per_second':get('toggle_success_on_time','count')/seconds,'saturated':changed or failed>=.05 or drop>0 or completion<.9,'goal_pass':all(x['failure_rate']<.01 and x['p(95)']<500 for x in apis.values()),'ecs_task_changed':changed,'ecs_metrics_censored':censored}
     write_json(out/'result.json',result)
     print(json.dumps(result,ensure_ascii=False),flush=True);return result
 
