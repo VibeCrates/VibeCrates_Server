@@ -208,6 +208,12 @@ infra/terraform/scripts/env-down.sh   # active=false apply → RDS 정지
 - **RDS는 정지해도 7일 뒤 AWS가 자동으로 다시 켠다.** 오래 끌 때는 7일마다 `env-down.sh`를 다시 돌린다.
 - 꺼져 있는 동안 사이트(프론트)는 열리지만 API는 502다.
 
+## 9. DB 백업
+
+- RDS 자동 백업(매일 03:00, 7일, 시점 복구) + 매일 03:30 `pg_dump` 전체를 S3 백업 버킷에 30일(`db_backup.tf`).
+- 경보 메일: `terraform.tfvars`에 `alert_email`을 넣고 apply → 확인 메일의 링크를 누른다.
+- 지금 한 번 뜨기: `infra/terraform/scripts/run-db-backup.sh`. 복원 방법은 `docs/db-backup.md`.
+
 ## 테스트
 
 ```bash

@@ -65,6 +65,10 @@ run "no_domain_active" {
   }
 
   assert {
+    condition     = length(aws_scheduler_schedule.db_backup) == 1 && length(aws_cloudwatch_metric_alarm.db_backup_missing) == 1 && length(aws_cloudwatch_event_rule.db_backup_failed) == 1
+    error_message = "켜면 매일 DB 덤프 스케줄과 실패·누락 경보가 있어야 한다"
+  }
+  assert {
     condition     = length(aws_nat_gateway.main) == 2 && length(aws_route.app_nat) == 2
     error_message = "켜면 AZ마다 NAT와 기본 경로가 있어야 한다"
   }
@@ -94,6 +98,14 @@ run "no_domain_inactive" {
   }
 
   assert {
+    condition     = aws_s3_bucket.backups.bucket != "" && length(aws_sns_topic_subscription.alerts_email) == 0
+    error_message = "끄더라도 백업 버킷은 남고, 메일을 비우면 구독을 만들지 않는다"
+  }
+  assert {
+    condition     = length(aws_scheduler_schedule.db_backup) == 0 && length(aws_cloudwatch_metric_alarm.db_backup_missing) == 0 && length(aws_cloudwatch_event_rule.db_backup_failed) == 0
+    error_message = "끄면 DB 덤프 스케줄과 경보가 없어야 한다(RDS가 멈춰 있고 NAT도 없다)"
+  }
+  assert {
     condition     = length(aws_nat_gateway.main) == 0 && length(aws_route.app_nat) == 0
     error_message = "끄면 NAT와 기본 경로가 없어야 한다"
   }
@@ -116,8 +128,13 @@ run "domain_active" {
   variables {
     active      = true
     domain_name = "crates.example"
+    alert_email = "ops@crates.example"
   }
 
+  assert {
+    condition     = length(aws_sns_topic_subscription.alerts_email) == 1
+    error_message = "경보 메일을 주면 구독을 만든다"
+  }
   assert {
     condition     = length(aws_cloudfront_distribution.main) == 1 && length(aws_lb.main) == 1 && length(aws_ecs_service.backend) == 1
     error_message = "도메인이 있고 켜져 있으면 CloudFront·ALB·ECS 서비스가 있어야 한다"

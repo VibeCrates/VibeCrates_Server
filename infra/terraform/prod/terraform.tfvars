@@ -8,3 +8,6 @@ ai_server_base_url      = "http://100.115.172.111:8000"
 tailscale_relay_enabled = true
 
 # 환경 켜기·끄기(active)는 scripts/env-up.sh·env-down.sh가 env.auto.tfvars에 적는다.
+
+# 백업 실패 등 운영 경보를 받을 메일(db_backup.tf). 처음 적용하면 확인 메일의 링크를 눌러야 받기 시작한다.
+alert_email = "harryjun43@naver.com"

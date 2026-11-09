@@ -88,3 +88,16 @@ output "github_backend_deploy_role_arn" {
 output "github_frontend_deploy_role_arn" {
   value = aws_iam_role.github_frontend_deploy.arn
 }
+
+output "backup_bucket" {
+  description = "매일 pg_dump 파일을 두는 버킷(docs/db-backup.md)"
+  value       = aws_s3_bucket.backups.id
+}
+
+output "db_backup_task_family" {
+  value = aws_ecs_task_definition.db_backup.family
+}
+
+output "db_backup_security_group_id" {
+  value = aws_security_group.db_backup.id
+}

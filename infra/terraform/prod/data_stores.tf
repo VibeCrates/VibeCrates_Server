@@ -66,6 +66,8 @@ resource "aws_db_instance" "main" {
   backup_window           = "18:00-18:30" # UTC = 한국 새벽 3시
   maintenance_window      = "sun:19:00-sun:19:30"
   copy_tags_to_snapshot   = true
+  # 인스턴스를 지워도 자동 백업을 보관 기간만큼 남긴다(기본은 함께 지운다).
+  delete_automated_backups = false
 
   enabled_cloudwatch_logs_exports = ["postgresql"]
 

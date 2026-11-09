@@ -157,3 +157,15 @@ variable "github_deploy_branch" {
   type    = string
   default = "main"
 }
+
+variable "db_dump_retention_days" {
+  description = "매일 pg_dump 파일을 백업 버킷에 두는 기간(일). RDS 자동 백업(7일)보다 길게 둔다"
+  type        = number
+  default     = 30
+}
+
+variable "alert_email" {
+  description = "백업 실패 등 운영 경보를 받을 메일. 비우면 구독을 만들지 않는다(받는 사람이 확인 링크를 눌러야 시작된다)"
+  type        = string
+  default     = ""
+}
