@@ -5,6 +5,7 @@ import com.crates.crates.jwt.JwtAuthenticationFilter;
 import com.crates.crates.jwt.JwtTokenProvider;
 import com.crates.crates.oauth.CustomOAuth2UserService;
 import com.crates.crates.oauth.CustomOidcUserService;
+import com.crates.crates.oauth.HttpCookieOAuth2AuthorizationRequestRepository;
 import com.crates.crates.oauth.OAuth2AuthenticationSuccessHandler;
 import com.crates.crates.user.CustomUserDetailsService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -34,6 +35,7 @@ public class SecurityConfig {
     private final CustomOAuth2UserService customOAuth2UserService;
     private final CustomOidcUserService customOidcUserService;
     private final OAuth2AuthenticationSuccessHandler oAuth2AuthenticationSuccessHandler;
+    private final HttpCookieOAuth2AuthorizationRequestRepository authorizationRequestRepository;
     private final ObjectMapper objectMapper;
 
     @Bean
@@ -62,6 +64,10 @@ public class SecurityConfig {
                         })
                 )
                 .oauth2Login(oauth2 -> oauth2
+                        // 로그인 중 요청 정보(state 등)를 서버 세션이 아니라 쿠키에 둔다. 로그인을 시작한 작업과
+                        // 콜백을 받는 작업이 달라도(무중단 배포 중, 작업 여러 개) 로그인된다.
+                        .authorizationEndpoint(endpoint -> endpoint
+                                .authorizationRequestRepository(authorizationRequestRepository))
                         .userInfoEndpoint(endpoint -> endpoint
                                 // userService는 일반 OAuth2 흐름에만 적용된다(카카오, 네이버).
                                 .userService(customOAuth2UserService)
