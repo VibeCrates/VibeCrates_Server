@@ -40,7 +40,7 @@ resource "aws_iam_role_policy" "ecs_task_event_logs" {
 # 그만 줄 때는 키를 비활성화(update-access-key --status Inactive)하거나 지운다. 그 즉시 접근이 막힌다.
 resource "aws_iam_user" "ai_log_reader" {
   name = "${local.name}-ai-log-reader"
-  tags = { Purpose = "AI 개발자의 행동 로그 읽기 (event-logs/ 읽기 전용)" }
+  tags = { Purpose = "AI 개발자 행동 로그 읽기 전용 event-logs/" }
 }
 
 resource "aws_iam_user_policy" "ai_log_reader" {
