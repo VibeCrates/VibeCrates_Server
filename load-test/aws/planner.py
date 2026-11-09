@@ -212,7 +212,15 @@ class Resources:
                             path, user = '/api/search/board?keyword='+quote(term['keyword']), self.actors[0]
                         if last_end is not None:
                             time.sleep(max(0, interval-(time.monotonic()-last_end)))
-                        extra = request(path, user['token'])
+                        # 측정 밖 준비 요청이다. 학교 AI 서버가 가끔 연결 시간 초과(502)를 내도 준비 전체를 버리지 않게 몇 번 다시 묻는다.
+                        for attempt in range(4):
+                            try:
+                                extra = request(path, user['token'])
+                                break
+                            except RuntimeError:
+                                if attempt == 3:
+                                    raise
+                                time.sleep(5 * (attempt + 1))
                         last_end = time.monotonic()
                         count += 1
                         if category == 'recommend':

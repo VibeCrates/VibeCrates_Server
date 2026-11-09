@@ -23,12 +23,17 @@ WRITES = set(APIS[6:])
 LABEL = {'home':'recommend', 'search_results':'search_board', 'mine':'my_boards'}
 
 
+def spare(expected):
+    return max(10, math.ceil(expected*0.01))
+
+
 def prepare(directory, name, rate, seconds):
     directory.mkdir(parents=True, exist_ok=True)
     if name in WRITES - {'initial_contents'}:
         return screen_prepare(directory, rate, seconds, only=name)
     data = users(directory)
-    n = math.ceil(rate*seconds)+1
+    # 높은 도착률에서는 k6가 구간 끝 경계에서 순번 몇 개를 더 연다(내 보드 640/s 워밍업에서 12,801개를 넘김). 판정 기준(expected)은 그대로 두고 일감만 여유 있게.
+    n = math.ceil(rate*seconds)+1+spare(rate*seconds)
     if name == 'initial_contents':
         fresh = rows("SELECT u.id,u.login_id FROM users u WHERE login_id ~ '^loadtest_new[0-9]+$' AND NOT EXISTS (SELECT 1 FROM user_vector v WHERE v.user_id=u.id) ORDER BY u.id")
         reserved_path = directory/'initial-reserved.json'
@@ -133,13 +138,15 @@ def stage(out,prepared,name,rate,seconds,cache_mode='on',settle_before=True,sett
     write_json(out/'ecs-replacement-events.json',events)
     changed |= bool(events)
     late_abort=name=='home' and p.returncode==108 and late_home_control_abort(out/'k6.log',seconds)
-    if p.returncode not in (0,99) and not late_abort:raise RuntimeError(f'k6 실행 실패 {p.returncode}')
+    # 포화 단계에서 k6가 비정상 종료해도(예: 255) 요약이 남았으면 그 관측으로 판정한다. 요약이 없을 때만 실행 실패다.
+    if p.returncode not in (0,99) and not late_abort and not (out/'summary.json').exists():raise RuntimeError(f'k6 실행 실패 {p.returncode}')
     start=measurement_start(out/'k6.log')
     if start is None:raise RuntimeError('측정 시작 시각 누락')
     write_json(out/'window.json',{'start':start,'end':start+seconds,'rate':rate,'seconds':seconds})
     pg_snapshot(out/'pgss.json');cloudwatch(out,start,start+seconds)
     r=judge(json.loads((out/'summary.json').read_text()),name,rate,seconds,changed,late_abort)
-    r.update(ecs_metrics_censored=censored,cache=cache_delta(before,after))
+    r.update(ecs_metrics_censored=censored,cache=cache_delta(before,after),k6_exit=p.returncode)
+    if p.returncode not in (0,99):r['saturated']=True
     # 교체 때 마지막 샘플까지만 비교한다. 카운터 중단을 서버 오류로 바꾸지 않는다.
     cache=r['cache']
     if cache_mode=='on':

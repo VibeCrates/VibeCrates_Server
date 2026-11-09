@@ -59,8 +59,9 @@ export const options = {
     rate: Math.round(Number(__ENV.RATE) * share * 10000), timeUnit: '10000s',
     duration: __ENV.DURATION || '120s', gracefulStop: '30s',
     // 부하 중 VU 초기화가 drop을 만들지 않게 허용한 VU를 측정 전에 모두 만든다.
-    preAllocatedVUs: Math.max(10, Math.ceil(Number(__ENV.RATE) * share * 10)),
-    maxVUs: Math.max(10, Math.ceil(Number(__ENV.RATE) * share * 10)),
+    // k6 EC2(c7g.xlarge, 8GB)에서 VU 하나가 약 0.6MB라 12,800개(1280/s)는 OOM으로 죽었다. 6,400개면 응답 5초까지 도착률을 지킨다.
+    preAllocatedVUs: Math.min(6400, Math.max(10, Math.ceil(Number(__ENV.RATE) * share * 10))),
+    maxVUs: Math.min(6400, Math.max(10, Math.ceil(Number(__ENV.RATE) * share * 10))),
   }])),
   thresholds,
   summaryTrendStats: ['count', 'avg', 'min', 'med', 'p(95)', 'p(99)', 'max'],

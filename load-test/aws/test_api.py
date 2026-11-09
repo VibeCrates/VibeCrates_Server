@@ -36,12 +36,12 @@ class ApiTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d,patch('api_sweep.users',return_value=data),patch('api_sweep.screen_prepare') as writes,patch('api_sweep.rows') as db:
             m=prepare(Path(d),'popular',10,60)
             self.assertEqual(set(m['tasks']),{'popular'})
-            self.assertEqual(len(m['tasks']['popular']),601)
+            self.assertEqual(len(m['tasks']['popular']),611)  # 600 + 1 + 경계 여유 10
             self.assertEqual(m['expected'],{'popular':600})
             writes.assert_not_called();db.assert_not_called()
     def test_initial_contents_never_reuses_accounts(self):
         data={'screens':[{'id':1,'token':'fixture'}], 'actors':[]}
-        fresh=[{'id':i,'login_id':str(i)} for i in range(10)]
+        fresh=[{'id':i,'login_id':str(i)} for i in range(30)]
         with tempfile.TemporaryDirectory() as d,patch('api_sweep.users',return_value=data),patch('api_sweep.rows',return_value=fresh),patch('api_sweep.request',return_value=[{'id':1}]),patch('api_sweep.login',side_effect=lambda u:u):
             a=prepare(Path(d),'initial_contents',1,2)
             b=prepare(Path(d),'initial_contents',1,2)
@@ -56,10 +56,10 @@ class ApiTest(unittest.TestCase):
             m=screen_prepare(Path(d),10,2,only='stored_like')
         self.assertEqual(set(m['tasks']),{'stored_like'})
         self.assertEqual(m['expected'],{'stored_like':20})
-        self.assertEqual(len(m['tasks']['stored_like']),21)
+        self.assertEqual(len(m['tasks']['stored_like']),31)  # 20 + 1 + 경계 여유 10
         sizes=resources.preflight.call_args.args[0][0]
-        self.assertEqual(sizes['stored_like'],21)
-        self.assertEqual(sum(sizes.values()),21)
+        self.assertEqual(sizes['stored_like'],31)
+        self.assertEqual(sum(sizes.values()),31)
 
     def test_single_write_uses_screen_reservations_with_full_api_rate(self):
         with tempfile.TemporaryDirectory() as d,patch('api_sweep.screen_prepare',return_value={}) as fn:

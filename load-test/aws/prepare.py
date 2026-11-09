@@ -48,7 +48,9 @@ def prepare(directory, rate, seconds, skip_ai=False, only=None):
     actors = data['actors']
     actor_by_id = {u['id']: u for u in actors}
     expected = counts(rate, seconds, skip_ai) if only is None else {only: __import__('math').ceil(rate*seconds)}
-    sizes = {name: (expected.get(name,0)+1 if name in expected else 0) for name in counts(1,1)}
+    # 개별 API 모드는 높은 도착률을 걸어 구간 끝 경계에서 순번이 몇 개 더 열린다(api_sweep.spare와 같은 여유).
+    margin = {} if only is None else {only: max(10, __import__('math').ceil(expected[only]*0.01))}
+    sizes = {name: (expected.get(name,0)+1+margin.get(name,0) if name in expected else 0) for name in counts(1,1)}
     resources.preflight([sizes], directory / 'stage-budget.json')
     tasks = {}
     for name in ('home', 'archive', 'search_results', 'content_detail', 'content_search', 'capture'):
